@@ -7,8 +7,10 @@ app.use(express.json());
 
 // Връзка с базата данни в Supabase
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: "postgresql://postgres.aqjcsaascqbopinhwyxx:861030Rumen@@://supabase.com",
+  ssl: { rejectUnauthorized: false }
 });
+
 
 // API 1: Приемане на сканиране от биометрия, карти или чипове
 app.post('/api/hardware/scan', async (req, res) => {
