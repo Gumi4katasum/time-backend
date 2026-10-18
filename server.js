@@ -89,22 +89,130 @@ app.post('/api/payroll/calculate', async (req, res) => {
 
       const totalHours = totalWorkMs / (1000 * 60 * 60);
       const finalAmount = totalHours * worker.hourly_rate;
-
       // Запис в таблицата за плащания
       if (totalHours > 0) {
+        // 1. Изтриваме старо изчисление
+        await pool.query(
+          `DELETE FROM payroll_payouts WHERE worker_id = $1 AND period_start = $2 AND period_end = $3`,
+          [worker.id, start_date, end_date]
+        );
+
+        // 2. Записваме новото
         await pool.query(
           `INSERT INTO payroll_payouts (worker_id, period_start, period_end, total_hours_worked, calculated_amount)
            VALUES ($1, $2, $3, $4, $5)`,
           [worker.id, start_date, end_date, totalHours.toFixed(2), finalAmount.toFixed(2)]
         );
       }
-    }
-
-    res.status(200).json({ success: true, message: 'Заплатите са пресметнати успешно' });
+     
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+// --- УЕБ ТАБЛО (DASHBOARD) ---
+app.get('/', async (req, res) => {
+  try {
+    const logs = await pool.query(`
+      SELECT w.name, a.code, hl.timestamp 
+      FROM hardware_logs hl
+      JOIN workers w ON hl.worker_id = w.id
+      JOIN activity_types a ON hl.activity_type_id = a.id
+      ORDER BY hl.timestamp DESC LIMIT 20
+    `);
+
+    let rows = '';
+    logs.rows.forEach(log => {
+      const color = log.code === 'clock_in' ? 'green' : (log.code === 'clock_out' ? 'red' : 'orange');
+      const type = log.code === 'clock_in' ? 'ВХОД' : (log.code === 'clock_out' ? 'ИЗХОД' : 'ПОЧИВКА');
+      rows += `<tr>
+                 <td>${log.name}</td>
+                 <td style="color:${color}; font-weight:bold;">${type}</td>
+                 <td>${new Date(log.timestamp).toLocaleString('bg-BG')}</td>
+               </tr>`;
+    });
+
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <title>Работно Време - Табло</title>
+        <style>
+          body { font-family: Arial; background: #f4f6f9; padding: 20px; }
+          h1 { color: #333; }
+          table { width: 100%; border-collapse: collapse; background: white; margin-top: 20px; }
+          th, td { padding: 12px; border-bottom: 1px solid #ddd; text-align: left; }
+          th { background: #34495e; color: white; }
+        </style>
+      </head>
+      <body>
+        <h1>Табло за Работно Време</h1>
+        <h3>Последни 20 сканирания:</h3>
+        <table>
+          <tr><th>Служител</th><th>Действие</th><th>Дата и Час</th></tr>
+          ${rows}
+        </table>
+      </body>
+      </html>
+    `);
+  } catch (err) {
+    res.status(500).send("Грешка при зареждане на данните: " + err.message);
+  }
+});
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Сървърът работи на порт ${PORT}`));
+// --- УЕБ ТАБЛО (DASHBOARD) ---
+app.get('/', async (req, res) => {
+  try {
+    const logs = await pool.query(`
+      SELECT w.name, a.code, hl.timestamp 
+      FROM hardware_logs hl
+      JOIN workers w ON hl.worker_id = w.id
+      JOIN activity_types a ON hl.activity_type_id = a.id
+      ORDER BY hl.timestamp DESC LIMIT 20
+    `);
+
+    let rows = '';
+    logs.rows.forEach(log => {
+      const color = log.code === 'clock_in' ? 'green' : (log.code === 'clock_out' ? 'red' : 'orange');
+      const type = log.code === 'clock_in' ? 'ВХОД' : (log.code === 'clock_out' ? 'ИЗХОД' : 'ПОЧИВКА');
+      rows += `<tr>
+                 <td>${log.name}</td>
+                 <td style="color:${color}; font-weight:bold;">${type}</td>
+                 <td>${new Date(log.timestamp).toLocaleString('bg-BG')}</td>
+               </tr>`;
+    });
+
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <title>Работно Време - Табло</title>
+        <style>
+          body { font-family: Arial; background: #f4f6f9; padding: 20px; }
+          h1 { color: #333; }
+          table { width: 100%; border-collapse: collapse; background: white; margin-top: 20px; }
+          th, td { padding: 12px; border-bottom: 1px solid #ddd; text-align: left; }
+          th { background: #34495e; color: white; }
+        </style>
+      </head>
+      <body>
+        <h1>Табло за Работно Време</h1>
+        <h3>Последни 20 сканирания:</h3>
+        <table>
+          <tr><th>Служител</th><th>Действие</th><th>Дата и Час</th></tr>
+          ${rows}
+        </table>
+      </body>
+      </html>
+    `);
+  } catch (err) {
+    res.status(500).send("Грешка при зареждане на данните: " + err.message);
+  }
+});
+
+// --- СТАРТИРАНЕ НА СЪРВЪРА ---
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Сървърът работи на порт ${PORT}`));
