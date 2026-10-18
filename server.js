@@ -131,6 +131,30 @@ app.put('/api/shifts', async (req, res) => {
   } catch (e) { fail(res, e); }
 });
 
+app.put('/api/shifts/bulk', async (req, res) => {
+  const items = (req.body || {}).items;
+  if (!Array.isArray(items) || !items.length || items.length > 400) return bad(res, 'Невалидни данни');
+  for (const it of items) {
+    if (!it.worker_id || !isDate(it.day) || (it.label && !PRESETS[it.label])) return bad(res, 'Невалидни данни');
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const it of items) {
+      if (!it.label) await client.query('DELETE FROM shifts WHERE worker_id=$1 AND day=$2', [it.worker_id, it.day]);
+      else await client.query(
+        `INSERT INTO shifts (worker_id, day, label, hours) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (worker_id, day) DO UPDATE SET label=EXCLUDED.label, hours=EXCLUDED.hours`,
+        [it.worker_id, it.day, it.label, PRESETS[it.label].h]);
+    }
+    await client.query('COMMIT');
+    res.json({ success: true });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    fail(res, e);
+  } finally { client.release(); }
+});
+
 app.post('/api/shifts/copy-week', async (req, res) => {
   const { from_monday, to_monday } = req.body || {};
   if (!isDate(from_monday) || !isDate(to_monday)) return bad(res, 'Невалидни дати');
