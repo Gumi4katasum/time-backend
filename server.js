@@ -64,7 +64,7 @@ app.use((req, res, next) => {
   if (pass && safeEq(given, pass)) return next();
   res.set('WWW-Authenticate', 'Basic realm="Persona"').status(401).send('Нужна е парола');
 });
-app.use(express.static(path.join(__dirname, 'public')));
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
 // ---------- Служители ----------
 app.get('/api/workers', async (req, res) => {
