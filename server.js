@@ -107,6 +107,24 @@ app.post('/api/payroll/calculate', async (req, res) => {
 });
 
 // УЕБ ТАБЛО (DASHBOARD)
+// API за моментно състояние (Кой е на работа в момента)
+app.get('/api/status/live', async (req, res) => {
+  try {
+    // Вземаме последното действие на всеки служител днес
+    const query = `
+      SELECT DISTINCT ON (w.id) w.name, a.code, a.description, hl.timestamp
+      FROM workers w
+      JOIN hardware_logs hl ON w.id = hl.worker_id
+      JOIN activity_types a ON hl.activity_type_id = a.id
+      WHERE hl.timestamp::date = CURRENT_DATE
+      ORDER BY w.id, hl.timestamp DESC
+    `;
+    const result = await pool.query(query);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 app.get('/', async (req, res) => {
   try {
     const logs = await pool.query(`
