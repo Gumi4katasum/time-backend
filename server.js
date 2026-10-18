@@ -1,268 +1,235 @@
 require('dotenv').config();
+
 const express = require('express');
+const crypto = require('crypto');
+const path = require('path');
 const { Pool } = require('pg');
 
 const app = express();
 app.use(express.json());
 
+// ---------- Настройки ----------
+const TZ = process.env.TZ_NAME || 'Europe/Sofia';
+const MONTH_HOURS = 168; // стандартен месец за часова ставка
+// Смени за графика. Ключът е това, което се показва в клетката. Променяй свободно.
+const PRESETS = {
+  'Д': { t: '08–16', h: 8 },
+  'В': { t: '16–24', h: 8 },
+  'Н': { t: '00–08', h: 8 },
+  'Ц': { t: '08–20', h: 12 }
+};
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  // Ако хостингът на базата ползва самоподписан сертификат, сложи DB_SSL_INSECURE=1
+  ssl: process.env.DB_SSL_INSECURE === '1' ? { rejectUnauthorized: false } : true
 });
 
-// API 1: Приемане на сканиране
+// ---------- Помощни ----------
+const fail = (res, err) => { console.error(err); res.status(500).json({ error: 'Грешка в сървъра' }); };
+const bad = (res, msg) => res.status(400).json({ error: msg });
+const isDate = s => /^\d{4}-\d{2}-\d{2}$/.test(s || '');
+const clean = v => (v == null || String(v).trim() === '') ? null : String(v).trim();
+const r2 = n => Math.round(n * 100) / 100;
+const dayOf = d => new Date(d).toLocaleDateString('sv-SE', { timeZone: TZ }); // YYYY-MM-DD
+const safeEq = (a, b) => {
+  const A = Buffer.from(String(a)), B = Buffer.from(String(b));
+  return A.length === B.length && crypto.timingSafeEqual(A, B);
+};
+
+// ---------- API за терминали (ключ на устройството) ----------
 app.post('/api/hardware/scan', async (req, res) => {
-  const { token, device_name, action_code, raw_data } = req.body;
+  const key = process.env.DEVICE_KEY;
+  if (!key || !safeEq(req.get('x-device-key') || '', key)) return res.status(401).json({ error: 'Невалиден ключ' });
+  const { token, device_name, action_code, raw_data } = req.body || {};
+  if (!token || !action_code) return bad(res, 'Липсват данни');
   try {
-    const workerCheck = await pool.query('SELECT id FROM workers WHERE card_token = $1 OR biometric_id = $1', [token]);
-    if (workerCheck.rows.length === 0) return res.status(404).json({ error: 'Работниците не са намерени' });
-    
-    const workerId = workerCheck.rows[0].id;
-    const actionCheck = await pool.query('SELECT id FROM activity_types WHERE code = $1', [action_code]);
-    if (actionCheck.rows.length === 0) return res.status(400).json({ error: 'Невалиден код на действие' });
-    
-    const actionTypeId = actionCheck.rows[0].id;
+    const w = await pool.query('SELECT id FROM workers WHERE is_active AND (card_token = $1 OR biometric_id = $1)', [String(token)]);
+    if (!w.rows.length) return res.status(404).json({ error: 'Работникът не е намерен' });
+    const a = await pool.query('SELECT id FROM activity_types WHERE code = $1', [action_code]);
+    if (!a.rows.length) return bad(res, 'Невалиден код на действие');
     await pool.query(
-      `INSERT INTO hardware_logs (worker_id, activity_type_id, device_source, raw_hardware_data) VALUES ($1, $2, $3, $4)`,
-      [workerId, actionTypeId, device_name, raw_data || '']
+      'INSERT INTO hardware_logs (worker_id, activity_type_id, device_source, raw_hardware_data) VALUES ($1, $2, $3, $4)',
+      [w.rows[0].id, a.rows[0].id, device_name || '', raw_data || '']
     );
-    res.status(200).json({ success: true, message: 'Успешно маркиране' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    res.json({ success: true, message: 'Успешно маркиране' });
+  } catch (e) { fail(res, e); }
 });
 
-// API 2: Изчисляване на заплати (МЕСЕЧНА СТАВКА)
-app.post('/api/payroll/calculate', async (req, res) => {
-  const { start_date, end_date } = req.body;
+// ---------- Всичко отдолу е с парола (HTTP Basic, потребителското име се игнорира) ----------
+app.use((req, res, next) => {
+  const pass = process.env.ADMIN_PASSWORD;
+  const b = Buffer.from((req.headers.authorization || '').replace(/^Basic /, ''), 'base64').toString();
+  const given = b.slice(b.indexOf(':') + 1);
+  if (pass && safeEq(given, pass)) return next();
+  res.set('WWW-Authenticate', 'Basic realm="Persona"').status(401).send('Нужна е парола');
+});
+app.use(express.static(path.join(__dirname, 'public')));
+
+// ---------- Служители ----------
+app.get('/api/workers', async (req, res) => {
   try {
-    // Вземаме месечната заплата (monthly_salary)
-    const workers = await pool.query('SELECT id, monthly_salary FROM workers WHERE is_active = true');
-    
-    for (let worker of workers.rows) {
-      const logs = await pool.query(
-        `SELECT hl.timestamp, at.code FROM hardware_logs hl
-         JOIN activity_types at ON hl.activity_type_id = at.id
-         WHERE hl.worker_id = $1 AND hl.timestamp::date BETWEEN $2 AND $3 ORDER BY hl.timestamp ASC`,
-        [worker.id, start_date, end_date]
+    const r = await pool.query('SELECT id, name, monthly_salary, card_token, biometric_id FROM workers WHERE is_active ORDER BY name');
+    res.json(r.rows);
+  } catch (e) { fail(res, e); }
+});
+
+app.post('/api/workers', async (req, res) => {
+  const { name, monthly_salary, card_token, biometric_id } = req.body || {};
+  if (!clean(name)) return bad(res, 'Липсва име');
+  try {
+    const r = await pool.query(
+      'INSERT INTO workers (name, monthly_salary, card_token, biometric_id, is_active) VALUES ($1,$2,$3,$4,true) RETURNING id',
+      [clean(name), Number(monthly_salary) || 0, clean(card_token), clean(biometric_id)]
+    );
+    res.json({ success: true, id: r.rows[0].id });
+  } catch (e) { fail(res, e); }
+});
+
+app.put('/api/workers/:id', async (req, res) => {
+  const { name, monthly_salary, card_token, biometric_id } = req.body || {};
+  if (!clean(name)) return bad(res, 'Липсва име');
+  try {
+    await pool.query(
+      'UPDATE workers SET name=$1, monthly_salary=$2, card_token=$3, biometric_id=$4 WHERE id=$5',
+      [clean(name), Number(monthly_salary) || 0, clean(card_token), clean(biometric_id), req.params.id]
+    );
+    res.json({ success: true });
+  } catch (e) { fail(res, e); }
+});
+
+app.delete('/api/workers/:id', async (req, res) => { // скрива, не трие историята
+  try { await pool.query('UPDATE workers SET is_active=false WHERE id=$1', [req.params.id]); res.json({ success: true }); }
+  catch (e) { fail(res, e); }
+});
+
+// ---------- График ----------
+app.get('/api/shifts', async (req, res) => {
+  const { from, to } = req.query;
+  if (!isDate(from) || !isDate(to)) return bad(res, 'Невалидни дати');
+  try {
+    const r = await pool.query('SELECT worker_id, day::text AS day, label, hours FROM shifts WHERE day BETWEEN $1 AND $2', [from, to]);
+    res.json({ presets: PRESETS, rows: r.rows });
+  } catch (e) { fail(res, e); }
+});
+
+app.put('/api/shifts', async (req, res) => {
+  const { worker_id, day, label } = req.body || {};
+  if (!worker_id || !isDate(day)) return bad(res, 'Невалидни данни');
+  try {
+    if (!label) {
+      await pool.query('DELETE FROM shifts WHERE worker_id=$1 AND day=$2', [worker_id, day]);
+    } else {
+      if (!PRESETS[label]) return bad(res, 'Непозната смяна');
+      await pool.query(
+        `INSERT INTO shifts (worker_id, day, label, hours) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (worker_id, day) DO UPDATE SET label=EXCLUDED.label, hours=EXCLUDED.hours`,
+        [worker_id, day, label, PRESETS[label].h]
       );
+    }
+    res.json({ success: true });
+  } catch (e) { fail(res, e); }
+});
 
-      let totalWorkMs = 0;
-      let lastClockIn = null;
+app.post('/api/shifts/copy-week', async (req, res) => {
+  const { from_monday, to_monday } = req.body || {};
+  if (!isDate(from_monday) || !isDate(to_monday)) return bad(res, 'Невалидни дати');
+  try {
+    await pool.query(
+      `INSERT INTO shifts (worker_id, day, label, hours)
+       SELECT worker_id, day + ($2::date - $1::date), label, hours
+       FROM shifts WHERE day BETWEEN $1::date AND $1::date + 6
+       ON CONFLICT (worker_id, day) DO UPDATE SET label=EXCLUDED.label, hours=EXCLUDED.hours`,
+      [from_monday, to_monday]
+    );
+    res.json({ success: true });
+  } catch (e) { fail(res, e); }
+});
 
-      logs.rows.forEach(log => {
-        if (log.code === 'clock_in') lastClockIn = new Date(log.timestamp);
-        if (log.code === 'break_start' && lastClockIn) {
-          totalWorkMs += (new Date(log.timestamp) - lastClockIn);
-          lastClockIn = null; 
-        }
-        if (log.code === 'break_end') lastClockIn = new Date(log.timestamp);
-        if (log.code === 'clock_out' && lastClockIn) {
-          totalWorkMs += (new Date(log.timestamp) - lastClockIn);
-          lastClockIn = null;
-        }
-      });
+// ---------- Заплати: аванс и заплата по дни ----------
+// Часовете се броят по дни (ден на започване на работата). Аванс = часове от start_date до advance_until.
+function workedSegments(logs) {
+  const out = [];
+  let start = null;
+  for (const l of logs) {
+    const t = new Date(l.timestamp);
+    if (l.code === 'clock_in' || l.code === 'break_end') start = t;
+    else if ((l.code === 'break_start' || l.code === 'clock_out') && start) {
+      out.push({ day: dayOf(start), h: (t - start) / 3600000 });
+      start = null;
+    }
+  }
+  return out;
+}
 
-      const totalHours = totalWorkMs / (1000 * 60 * 60);
-      
-      // Изчисляваме пропорционално спрямо 168 часа (стандартен месец)
-      const hourlyRate = worker.monthly_salary / 168; 
-      const finalAmount = totalHours * hourlyRate;
-      
-      if (totalHours > 0) {
-        await pool.query(
-          `DELETE FROM payroll_payouts WHERE worker_id = $1 AND period_start = $2 AND period_end = $3`,
-          [worker.id, start_date, end_date]
-        );
-        await pool.query(
-          `INSERT INTO payroll_payouts (worker_id, period_start, period_end, total_hours_worked, calculated_amount)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [worker.id, start_date, end_date, totalHours.toFixed(2), finalAmount.toFixed(2)]
+app.post('/api/payroll/calculate', async (req, res) => {
+  const { start_date, end_date, advance_until, source } = req.body || {};
+  if (![start_date, end_date, advance_until].every(isDate)) return bad(res, 'Невалидни дати');
+  const useSchedule = source === 'schedule';
+  const client = await pool.connect();
+  try {
+    const workers = (await client.query('SELECT id, name, monthly_salary FROM workers WHERE is_active ORDER BY name')).rows;
+    const byWorker = {}; // id -> [{day, h}]
+
+    if (useSchedule) {
+      const r = await client.query('SELECT worker_id, day::text AS day, hours FROM shifts WHERE day BETWEEN $1 AND $2', [start_date, end_date]);
+      r.rows.forEach(x => (byWorker[x.worker_id] ||= []).push({ day: x.day, h: Number(x.hours) }));
+    } else {
+      const r = await client.query(
+        `SELECT hl.worker_id, hl.timestamp, at.code
+         FROM hardware_logs hl JOIN activity_types at ON hl.activity_type_id = at.id
+         WHERE hl.timestamp >= $1::date - 1 AND hl.timestamp < $2::date + 2
+         ORDER BY hl.worker_id, hl.timestamp`, [start_date, end_date]);
+      const grouped = {};
+      r.rows.forEach(x => (grouped[x.worker_id] ||= []).push(x));
+      for (const id in grouped) byWorker[id] = workedSegments(grouped[id]);
+    }
+
+    const rows = [];
+    await client.query('BEGIN');
+    for (const w of workers) {
+      let total = 0, adv = 0;
+      for (const s of byWorker[w.id] || []) {
+        if (s.day < start_date || s.day > end_date) continue;
+        total += s.h;
+        if (s.day <= advance_until) adv += s.h;
+      }
+      const rate = Number(w.monthly_salary) / MONTH_HOURS;
+      const amount = r2(total * rate), advance = r2(adv * rate), salary = r2(amount - advance);
+      rows.push({ worker_id: w.id, name: w.name, hours: r2(total), advance_hours: r2(adv), amount, advance, salary });
+      await client.query('DELETE FROM payroll_payouts WHERE worker_id=$1 AND period_start=$2 AND period_end=$3', [w.id, start_date, end_date]);
+      if (total > 0) {
+        await client.query(
+          `INSERT INTO payroll_payouts (worker_id, period_start, period_end, total_hours_worked, calculated_amount, advance_until, advance_amount, salary_amount)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [w.id, start_date, end_date, r2(total), amount, advance_until, advance, salary]
         );
       }
     }
-    res.status(200).json({ success: true, message: 'Заплатите са пресметнати успешно' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    await client.query('COMMIT');
+    res.json({ success: true, rows });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    fail(res, e);
+  } finally { client.release(); }
 });
 
-// API 3: Моментно състояние
+// ---------- На живо ----------
 app.get('/api/status/live', async (req, res) => {
   try {
-    const query = `
-      SELECT DISTINCT ON (w.id) w.name, a.code, a.description, hl.timestamp
-      FROM workers w
-      JOIN hardware_logs hl ON w.id = hl.worker_id
-      JOIN activity_types a ON hl.activity_type_id = a.id
-      WHERE hl.timestamp::date = CURRENT_DATE
-      ORDER BY w.id, hl.timestamp DESC
-    `;
-    const result = await pool.query(query);
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    const r = await pool.query(
+      `SELECT DISTINCT ON (w.id) w.name, a.code, hl.timestamp
+       FROM workers w
+       JOIN hardware_logs hl ON w.id = hl.worker_id
+       JOIN activity_types a ON hl.activity_type_id = a.id
+       WHERE w.is_active AND (hl.timestamp AT TIME ZONE $1)::date = (now() AT TIME ZONE $1)::date
+       ORDER BY w.id, hl.timestamp DESC`, [TZ]);
+    res.json(r.rows);
+  } catch (e) { fail(res, e); }
 });
 
-// УЕБ ТАБЛО (НОВИЯТ КРАСИВ ИНТЕРФЕЙС)
-app.get('/', (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <title>Управление на персонала</title>
-      <style>
-        body { font-family: 'Segoe UI', Arial; background: #eef2f5; margin: 0; padding: 20px; }
-        .container { max-width: 900px; margin: auto; background: white; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: hidden; }
-        .header { background: #2c3e50; color: white; padding: 20px; text-align: center; }
-        .tabs { display: flex; background: #ecf0f1; }
-        .tab { flex: 1; padding: 15px; text-align: center; cursor: pointer; font-weight: bold; color: #7f8c8d; }
-        .tab.active { background: white; color: #2c3e50; border-bottom: 3px solid #3498db; }
-        .content { padding: 20px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        th, td { padding: 12px; border-bottom: 1px solid #ddd; text-align: left; }
-        th { background: #f8f9fa; color: #2c3e50; }
-        .badge { padding: 4px 8px; border-radius: 4px; color: white; font-size: 12px; font-weight: bold; }
-        .in { background: #27ae60; }
-        .out { background: #c0392b; }
-        .break { background: #f39c12; }
-        .payroll-form { background: #f8f9fa; padding: 20px; border-radius: 8px; margin-top: 20px; }
-        input[type="date"] { padding: 8px; border: 1px solid #ccc; border-radius: 4px; margin-right: 10px; }
-        button { background: #3498db; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: bold; }
-        button:hover { background: #2980b9; }
-        #result { margin-top: 15px; font-weight: bold; color: #27ae60; }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <div class="header">
-          <h1>Система за управление на персонала</h1>
-        </div>
-        <div class="tabs">
-          <div class="tab active" onclick="showTab('live')">На живо (Статус)</div>
-          <div class="tab" onclick="showTab('payroll')">Финанси (Заплати)</div>
-        </div>
-
-        <div id="tab-live" class="content">
-          <h2>Кой е на работа в момента?</h2>
-          <table id="live-table">
-            <thead>
-              <tr><th>Служител</th><th>Статус</th><th>От колко време?</th></tr>
-            </thead>
-            <tbody id="live-body">
-              <tr><td colspan="3">Зареждане...</td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div id="tab-payroll" class="content" style="display:none;">
-          <h2>Изчисляване на възнаграждения</h2>
-          <div class="payroll-form">
-            <label>От дата:</label> <input type="date" id="start_date">
-            <label>До дата:</label> <input type="date" id="end_date">
-            <button onclick="calculatePayroll()">Изчисли</button>
-            <div id="result"></div>
-          </div>
-        </div>
-      </div>
-
-      <script>
-        function showTab(tabName) {
-          document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-          document.querySelectorAll('.content').forEach(c => c.style.display = 'none');
-          
-          if (tabName === 'live') {
-            document.querySelectorAll('.tab')[0].classList.add('active');
-            document.getElementById('tab-live').style.display = 'block';
-            loadLiveStatus();
-          } else {
-            document.querySelectorAll('.tab')[1].classList.add('active');
-            document.getElementById('tab-payroll').style.display = 'block';
-          }
-        }
-
-        async function loadLiveStatus() {
-          try {
-            const res = await fetch('/api/status/live');
-            const data = await res.json();
-            const tbody = document.getElementById('live-body');
-            tbody.innerHTML = '';
-
-            if (data.length === 0) {
-              tbody.innerHTML = '<tr><td colspan="3">Няма сканирания днес.</td></tr>';
-              return;
-            }
-
-            data.forEach(emp => {
-              let statusText = '';
-              let badgeClass = '';
-              if (emp.code === 'clock_in' || emp.code === 'break_end') {
-                statusText = 'На работа'; badgeClass = 'in';
-              } else if (emp.code === 'clock_out') {
-                statusText = 'Излязъл'; badgeClass = 'out';
-              } else if (emp.code === 'break_start') {
-                statusText = 'В почивка'; badgeClass = 'break';
-              }
-
-              const timeStr = new Date(emp.timestamp).toLocaleTimeString('bg-BG', {hour: '2-digit', minute:'2-digit'});
-              
-              tbody.innerHTML += \`
-                <tr>
-                  <td><strong>\${emp.name}</strong></td>
-                  <td><span class="badge \${badgeClass}">\${statusText}</span></td>
-                  <td>От \${timeStr} ч.</td>
-                </tr>
-              \`;
-            });
-          } catch (e) {
-            console.error("Грешка при зареждане:", e);
-          }
-        }
-
-        async function calculatePayroll() {
-          const start = document.getElementById('start_date').value;
-          const end = document.getElementById('end_date').value;
-          const resultDiv = document.getElementById('result');
-
-          if (!start || !end) {
-            resultDiv.style.color = 'red';
-            resultDiv.innerText = 'Моля, изберете дати!';
-            return;
-          }
-
-          resultDiv.style.color = 'black';
-          resultDiv.innerText = 'Изчисляване...';
-
-          try {
-            const res = await fetch('/api/payroll/calculate', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ start_date: start, end_date: end })
-            });
-            const data = await res.json();
-            
-            if (data.success) {
-              resultDiv.style.color = 'green';
-              resultDiv.innerText = '✅ ' + data.message;
-            } else {
-              resultDiv.style.color = 'red';
-              resultDiv.innerText = 'Грешка: ' + data.error;
-            }
-          } catch (e) {
-            resultDiv.style.color = 'red';
-            resultDiv.innerText = 'Грешка при връзката.';
-          }
-        }
-
-        loadLiveStatus();
-        setInterval(loadLiveStatus, 30000); 
-      </script>
-    </body>
-    </html>
-  `);
-});
+if (!process.env.ADMIN_PASSWORD) console.warn('ВНИМАНИЕ: няма ADMIN_PASSWORD – таблото е заключено за всички.');
+if (!process.env.DEVICE_KEY) console.warn('ВНИМАНИЕ: няма DEVICE_KEY – терминалите не могат да сканират.');
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Сървърът работи на порт ${PORT}`));
