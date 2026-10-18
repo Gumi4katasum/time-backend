@@ -7,7 +7,7 @@ app.use(express.json());
 
 // Връзка с базата данни в Supabase
 const pool = new Pool({
-  connectionString: "postgresql://postgres.aqjcsaascqbopinhwyxx:861030Rumen@@://supabase.com",
+  connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
