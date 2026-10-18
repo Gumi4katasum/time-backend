@@ -5,26 +5,32 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Управление на персонала</title>
 <style>
-:root{--bg:#f3f5f8;--card:#fff;--tx:#1d2330;--mu:#6b7385;--ac:#2f6fed;--bd:#dde1e8;--ok:#1f9d55;--no:#c0392b;--wa:#d98a00}
-@media(prefers-color-scheme:dark){:root{--bg:#14171d;--card:#1d222b;--tx:#e8ebf1;--mu:#99a1b3;--ac:#6f9bff;--bd:#2d3441}}
+:root{--bg:#f3f4f8;--card:#fff;--tx:#1b1f2a;--mu:#6c7488;--ac:#4f46e5;--bd:#e3e6ee;--ok:#16a34a;--no:#dc2626;--wa:#d97706}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1218;--card:#181c25;--tx:#e9ecf3;--mu:#98a0b3;--ac:#8b85ff;--bd:#272c38}}
 *{box-sizing:border-box}body{margin:0;font:15px system-ui,sans-serif;background:var(--bg);color:var(--tx)}
-header{display:flex;gap:6px;padding:10px;overflow-x:auto;background:var(--card);border-bottom:1px solid var(--bd);position:sticky;top:0;z-index:5}
+header{background:var(--card);border-bottom:1px solid var(--bd);position:sticky;top:0;z-index:5;padding:10px 12px 8px}
+.brand{display:flex;gap:10px;align-items:center;margin-bottom:8px;font-size:17px}
+.logo{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--ac),#a99bff);color:#fff;display:grid;place-items:center;font-weight:800;font-size:18px;overflow:hidden}
+nav{display:flex;gap:6px;overflow-x:auto}
 main{padding:12px;max-width:1100px;margin:auto}
-button,input,select{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:8px 10px}
-button{cursor:pointer;white-space:nowrap}button.on,button.p{background:var(--ac);color:#fff;border-color:var(--ac)}
-.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:12px;margin-bottom:12px}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
+button,input,select{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:8px 12px}
+button{cursor:pointer;white-space:nowrap}nav button{border-radius:20px;border-color:transparent;background:transparent;color:var(--mu);font-weight:600}
+nav button.on{background:var(--ac);color:#fff}button.p{background:var(--ac);color:#fff;border-color:var(--ac);font-weight:600}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px;margin-bottom:12px;box-shadow:0 1px 3px rgba(20,24,40,.06)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
 .scroll{overflow-x:auto}table{border-collapse:collapse;width:100%}
-th,td{border-bottom:1px solid var(--bd);padding:5px;text-align:center;white-space:nowrap}
-th:first-child,td:first-child{text-align:left;position:sticky;left:0;background:var(--card)}
-td.c button{width:46px;height:40px;padding:0;font-weight:700}td.c button.s{background:var(--ac);color:#fff;border-color:var(--ac)}
+th,td{border-bottom:1px solid var(--bd);padding:5px;text-align:center;white-space:nowrap}th{color:var(--mu);font-weight:600;font-size:13px}
+th:first-child,td:first-child{text-align:left;position:sticky;left:0;background:var(--card);z-index:1}
+td.c button{width:46px;height:40px;padding:0;font-weight:700;color:var(--mu);border-radius:10px}
+td.nm{cursor:pointer;font-weight:600}th.dh{cursor:pointer}
+.bb{font-weight:600;border-left:6px solid var(--bd)}.bb.sel{outline:2px solid var(--ac);outline-offset:1px}
 .mu{color:var(--mu)}.b{display:inline-block;padding:3px 8px;border-radius:6px;color:#fff;font-size:12px;font-weight:700}
 .in{background:var(--ok)}.out{background:var(--no)}.br{background:var(--wa)}.err{color:var(--no)}
 td input{width:100%;min-width:90px}
 </style>
 </head>
 <body>
-<header id="tabs"></header>
+<header><div class="brand"><span class="logo" id="logo"></span><b id="bn"></b></div><nav id="tabs"></nav></header>
 <main id="app"></main>
 <script>
 const h = (t, a = {}, ...c) => {
@@ -43,8 +49,15 @@ const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0
 const addDays = (s, n) => { const d = new Date(s + 'T12:00'); d.setDate(d.getDate() + n); return iso(d); };
 const monday = d => { d = new Date(d); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return iso(d); };
 
-const S = { tab: 'sched', week: monday(new Date()), month: iso(new Date()).slice(0, 7), advDay: 15, source: 'scans', pay: null };
+const S = { brush: 'Д', tab: 'sched', week: monday(new Date()), month: iso(new Date()).slice(0, 7), advDay: 15, source: 'scans', pay: null };
 const TABS = { sched: 'График', pay: 'Заплати', live: 'На живо', emps: 'Служители' };
+const COMPANY = 'ФЕРБИНДУНГ ГРУП ЕООД';   // <- сложи името на фирмата
+const LOGO = '';                 // <- линк към картинка (по желание); ако е празно, се показва първата буква
+const COLORS = { 'Д': '#f59e0b', 'В': '#3b82f6', 'Н': '#7c3aed', 'Ц': '#10b981' };
+const colorOf = k => COLORS[k] || '#4f46e5';
+document.title = COMPANY;
+document.getElementById('bn').textContent = COMPANY;
+document.getElementById('logo').append(LOGO ? h('img', { src: LOGO, style: 'width:100%;height:100%;object-fit:cover' }) : COMPANY[0]);
 
 async function render() {
   const tabs = document.getElementById('tabs'); tabs.innerHTML = '';
@@ -54,25 +67,43 @@ async function render() {
   catch (e) { app.innerHTML = ''; app.append(h('p', { className: 'err' }, e.message)); }
 }
 
-// ---------- График: докосни клетка = следваща смяна ----------
+// ---------- График: избери смяна от лентата, после докосвай клетки ----------
 async function vSched() {
   const days = [...Array(7)].map((_, i) => addDays(S.week, i)), nm = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'];
   const [ws, sh] = await Promise.all([api('/api/workers'), api(`/api/shifts?from=${days[0]}&to=${days[6]}`)]);
   const P = sh.presets, order = ['', ...Object.keys(P)], map = {};
+  if (S.brush !== 'cycle' && S.brush !== 'clear' && !P[S.brush]) S.brush = 'cycle';
   sh.rows.forEach(r => map[r.worker_id + '|' + r.day] = r.label);
   const cells = [], hrs = {}, cnt = [];
   const upd = () => {
-    cells.forEach(([b, k]) => { b.textContent = map[k] || '·'; b.className = map[k] ? 's' : ''; });
+    cells.forEach(([b, k]) => { const v = map[k]; b.textContent = v || '·'; b.style.background = v ? colorOf(v) : ''; b.style.color = v ? '#fff' : ''; b.style.borderColor = v ? colorOf(v) : ''; });
     ws.forEach(w => hrs[w.id].textContent = days.reduce((s, d) => s + (P[map[w.id + '|' + d]]?.h || 0), 0));
     days.forEach((d, i) => cnt[i].textContent = ws.filter(w => map[w.id + '|' + d]).length);
   };
-  const table = h('table', {}, h('tr', {}, h('th', {}, 'Служител'), days.map((d, i) => h('th', {}, nm[i], h('br'), h('span', { className: 'mu' }, d.slice(8) + '.' + d.slice(5, 7)))), h('th', {}, 'Часове')));
+  const target = () => S.brush === 'cycle' ? null : S.brush === 'clear' ? '' : S.brush;
+  const fill = async pairs => {
+    const v = target(); if (v === null) { alert('Избери смяна от лентата най-горе.'); return; }
+    const old = pairs.map(([w, d]) => map[w.id + '|' + d] || '');
+    pairs.forEach(([w, d]) => map[w.id + '|' + d] = v); upd();
+    try { await api('/api/shifts/bulk', { method: 'PUT', body: { items: pairs.map(([w, d]) => ({ worker_id: w.id, day: d, label: v })) } }); }
+    catch (e) { pairs.forEach(([w, d], i) => map[w.id + '|' + d] = old[i]); upd(); alert(e.message); }
+  };
+  const bar = h('div', { className: 'row' });
+  ['cycle', ...Object.keys(P), 'clear'].forEach(k => {
+    const btn = h('button', { className: 'bb' + (S.brush === k ? ' sel' : ''), onclick: () => { S.brush = k; [...bar.children].forEach(c => c.classList.toggle('sel', c.dataset.k === k)); } },
+      k === 'cycle' ? '↻ Редуване' : k === 'clear' ? '✕ Изтрий' : k + ' ' + P[k].t);
+    btn.dataset.k = k; if (P[k]) btn.style.borderLeftColor = colorOf(k); bar.append(btn);
+  });
+  const table = h('table', {}, h('tr', {}, h('th', {}, 'Служител'),
+    days.map((d, i) => h('th', { className: 'dh', onclick: () => { if (ws.length && confirm('Попълни ' + nm[i] + ' ' + d.slice(8) + '.' + d.slice(5, 7) + ' за всички служители?')) fill(ws.map(w => [w, d])); } }, nm[i], h('br'), h('span', {}, d.slice(8) + '.' + d.slice(5, 7))),
+    ), h('th', {}, 'Часове')));
   ws.forEach(w => {
     hrs[w.id] = h('b');
-    table.append(h('tr', {}, h('td', {}, w.name), days.map(d => {
+    table.append(h('tr', {}, h('td', { className: 'nm', onclick: () => fill(days.map(d => [w, d])) }, w.name), days.map(d => {
       const k = w.id + '|' + d, b = h('button', {});
       b.onclick = async () => {
-        const old = map[k] || '', nx = order[(order.indexOf(old) + 1) % order.length];
+        const old = map[k] || '';
+        const nx = S.brush === 'cycle' ? order[(order.indexOf(old) + 1) % order.length] : S.brush === 'clear' ? '' : (old === S.brush ? '' : S.brush);
         map[k] = nx; upd();
         try { await api('/api/shifts', { method: 'PUT', body: { worker_id: w.id, day: d, label: nx } }); }
         catch (e) { map[k] = old; upd(); alert(e.message); }
@@ -82,18 +113,18 @@ async function vSched() {
   });
   table.append(h('tr', {}, h('td', {}, 'Хора на смяна'), days.map((_, i) => { cnt[i] = h('b'); return h('td', {}, cnt[i]); }), h('td')));
   upd();
-  const legend = Object.entries(P).map(([k, v]) => `${k} = ${v.t}`).join('  ·  ');
   return h('div', { className: 'card' },
     h('div', { className: 'row' },
       h('button', { onclick: () => { S.week = addDays(S.week, -7); render(); } }, '◀'),
-      h('b', {}, `${days[0]} – ${days[6]}`),
+      h('b', {}, `${days[0].slice(8)}.${days[0].slice(5, 7)} – ${days[6].slice(8)}.${days[6].slice(5, 7)}.${days[6].slice(0, 4)}`),
       h('button', { onclick: () => { S.week = addDays(S.week, 7); render(); } }, '▶'),
       h('button', { onclick: () => { S.week = monday(new Date()); render(); } }, 'Днес'),
       h('button', { onclick: async () => {
         if (!confirm('Копиране на предишната седмица в тази?')) return;
         try { await api('/api/shifts/copy-week', { method: 'POST', body: { from_monday: addDays(S.week, -7), to_monday: S.week } }); render(); } catch (e) { alert(e.message); }
       } }, 'Копирай предишната седмица')),
-    h('p', { className: 'mu' }, 'Докосни клетка, за да смениш смяната. ', legend),
+    bar,
+    h('p', { className: 'mu' }, 'Избери смяна, после докосвай клетки. Докосни име, за да попълниш цялата седмица на човека, или ден най-горе, за да попълниш всички за този ден.'),
     h('div', { className: 'scroll' }, table));
 }
 
