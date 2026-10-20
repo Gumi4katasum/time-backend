@@ -49,12 +49,11 @@ const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0
 const addDays = (s, n) => { const d = new Date(s + 'T12:00'); d.setDate(d.getDate() + n); return iso(d); };
 const monday = d => { d = new Date(d); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return iso(d); };
 
-const S = { brush: 'Д', tab: 'sched', week: monday(new Date()), month: iso(new Date()).slice(0, 7), advDay: 15, source: 'scans', pay: null };
-const TABS = { sched: 'График', pay: 'Заплати', live: 'На живо', emps: 'Служители' };
+const depsOf = o => String(o.department || '').split(',').map(x => x.trim()).filter(Boolean);
+const S = { dept: '', brush: 'Д', tab: 'sched', week: monday(new Date()), month: iso(new Date()).slice(0, 7), advDay: 15, source: 'scans', pay: null };
+const TABS = { sched: 'График', shifts: 'Смени', pay: 'Заплати', live: 'На живо', emps: 'Служители' };
 const COMPANY = 'ФЕРБИНДУНГ ГРУП ЕООД';   // <- сложи името на фирмата
 const LOGO = '';                 // <- линк към картинка (по желание); ако е празно, се показва първата буква
-const COLORS = { 'Д': '#f59e0b', 'В': '#3b82f6', 'Н': '#7c3aed', 'Ц': '#10b981' };
-const colorOf = k => COLORS[k] || '#4f46e5';
 document.title = COMPANY;
 document.getElementById('bn').textContent = COMPANY;
 document.getElementById('logo').append(LOGO ? h('img', { src: LOGO, style: 'width:100%;height:100%;object-fit:cover' }) : COMPANY[0]);
@@ -63,16 +62,20 @@ async function render() {
   const tabs = document.getElementById('tabs'); tabs.innerHTML = '';
   for (const k in TABS) tabs.append(h('button', { className: S.tab === k ? 'on' : '', onclick: () => { S.tab = k; render(); } }, TABS[k]));
   const app = document.getElementById('app');
-  try { const v = await ({ sched: vSched, pay: vPay, live: vLive, emps: vEmps })[S.tab](); app.innerHTML = ''; app.append(v); }
+  try { const v = await ({ sched: vSched, shifts: vShifts, pay: vPay, live: vLive, emps: vEmps })[S.tab](); app.innerHTML = ''; app.append(v); }
   catch (e) { app.innerHTML = ''; app.append(h('p', { className: 'err' }, e.message)); }
 }
 
 // ---------- График: избери смяна от лентата, после докосвай клетки ----------
 async function vSched() {
   const days = [...Array(7)].map((_, i) => addDays(S.week, i)), nm = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'];
-  const [ws, sh] = await Promise.all([api('/api/workers'), api(`/api/shifts?from=${days[0]}&to=${days[6]}`)]);
-  const P = sh.presets, order = ['', ...Object.keys(P)], map = {};
-  if (S.brush !== 'cycle' && S.brush !== 'clear' && !P[S.brush]) S.brush = 'cycle';
+  const [all, sh] = await Promise.all([api('/api/workers'), api(`/api/shifts?from=${days[0]}&to=${days[6]}`)]);
+  const ws = all.filter(w => !S.dept || depsOf(w).includes(S.dept));
+  const P = sh.presets, map = {};
+  const vis = k => !S.dept || !P[k].department || P[k].department === S.dept;
+  const colorOf = k => P[k]?.color || '#4f46e5';
+  const order = ['', ...Object.keys(P).filter(vis)];
+  if (S.brush !== 'cycle' && S.brush !== 'clear' && !(P[S.brush] && vis(S.brush))) S.brush = 'cycle';
   sh.rows.forEach(r => map[r.worker_id + '|' + r.day] = r.label);
   const cells = [], hrs = {}, cnt = [];
   const upd = () => {
@@ -89,11 +92,12 @@ async function vSched() {
     catch (e) { pairs.forEach(([w, d], i) => map[w.id + '|' + d] = old[i]); upd(); alert(e.message); }
   };
   const bar = h('div', { className: 'row' });
-  ['cycle', ...Object.keys(P), 'clear'].forEach(k => {
+  ['cycle', ...Object.keys(P).filter(vis), 'clear'].forEach(k => {
     const btn = h('button', { className: 'bb' + (S.brush === k ? ' sel' : ''), onclick: () => { S.brush = k; [...bar.children].forEach(c => c.classList.toggle('sel', c.dataset.k === k)); } },
       k === 'cycle' ? '↻ Редуване' : k === 'clear' ? '✕ Изтрий' : k + ' ' + P[k].t);
     btn.dataset.k = k; if (P[k]) btn.style.borderLeftColor = colorOf(k); bar.append(btn);
   });
+  bar.append(h('button', { onclick: () => { S.tab = 'shifts'; render(); } }, '＋ Нова смяна'));
   const table = h('table', {}, h('tr', {}, h('th', {}, 'Служител'),
     days.map((d, i) => h('th', { className: 'dh', onclick: () => { if (ws.length && confirm('Попълни ' + nm[i] + ' ' + d.slice(8) + '.' + d.slice(5, 7) + ' за всички служители?')) fill(ws.map(w => [w, d])); } }, nm[i], h('br'), h('span', {}, d.slice(8) + '.' + d.slice(5, 7))),
     ), h('th', {}, 'Часове')));
@@ -123,6 +127,7 @@ async function vSched() {
         if (!confirm('Копиране на предишната седмица в тази?')) return;
         try { await api('/api/shifts/copy-week', { method: 'POST', body: { from_monday: addDays(S.week, -7), to_monday: S.week } }); render(); } catch (e) { alert(e.message); }
       } }, 'Копирай предишната седмица')),
+    deptBar(all),
     bar,
     h('p', { className: 'mu' }, 'Избери смяна, после докосвай клетки. Докосни име, за да попълниш цялата седмица на човека, или ден най-горе, за да попълниш всички за този ден.'),
     h('div', { className: 'scroll' }, table));
@@ -130,6 +135,7 @@ async function vSched() {
 
 // ---------- Заплати ----------
 async function vPay() {
+  const all = await api('/api/workers');
   const [y, m] = S.month.split('-').map(Number), last = new Date(y, m, 0).getDate();
   const body = () => ({ start_date: S.month + '-01', end_date: S.month + '-' + String(last).padStart(2, '0'), advance_until: S.month + '-' + String(S.advDay).padStart(2, '0'), source: S.source });
   const out = h('div', { className: 'scroll' });
@@ -137,12 +143,13 @@ async function vPay() {
     if (!S.pay) return;
     const t = h('table', {}, h('tr', {}, ['Служител', 'Часове', 'Часове до аванса', 'Общо', 'Аванс', 'Заплата'].map(x => h('th', {}, x))));
     const T = [0, 0, 0];
-    S.pay.forEach(r => { T[0] += r.amount; T[1] += r.advance; T[2] += r.salary; t.append(h('tr', {}, h('td', {}, r.name), h('td', {}, r.hours), h('td', {}, r.advance_hours), h('td', {}, r.amount.toFixed(2)), h('td', {}, r.advance.toFixed(2)), h('td', {}, h('b', {}, r.salary.toFixed(2))))); });
+    S.pay.filter(r => !S.dept || depsOf(r).includes(S.dept)).forEach(r => { T[0] += r.amount; T[1] += r.advance; T[2] += r.salary; t.append(h('tr', {}, h('td', {}, r.name), h('td', {}, r.hours), h('td', {}, r.advance_hours), h('td', {}, r.amount.toFixed(2)), h('td', {}, r.advance.toFixed(2)), h('td', {}, h('b', {}, r.salary.toFixed(2))))); });
     t.append(h('tr', {}, h('td', {}, h('b', {}, 'Общо')), h('td'), h('td'), h('td', {}, T[0].toFixed(2)), h('td', {}, T[1].toFixed(2)), h('td', {}, h('b', {}, T[2].toFixed(2)))));
     out.innerHTML = ''; out.append(t);
   };
   show();
   return h('div', { className: 'card' },
+    deptBar(all),
     h('div', { className: 'row' },
       h('input', { type: 'month', value: S.month, onchange: e => { S.month = e.target.value; S.pay = null; render(); } }),
       h('label', {}, 'Аванс до ден ', h('input', { type: 'number', min: 1, max: 28, value: S.advDay, style: 'width:70px', onchange: e => { S.advDay = Math.min(28, Math.max(1, +e.target.value || 15)); } })),
@@ -166,22 +173,56 @@ async function vLive() {
   return h('div', { className: 'card' }, h('div', { className: 'scroll' }, t));
 }
 
+// ---------- Отдели ----------
+const DEPTS = ['Сервитьори', 'Бармани', 'Готвачи', 'Хотел'];
+const depList = ws => [...new Set([...DEPTS, ...ws.flatMap(depsOf)])];
+function deptBar(ws) {
+  const deps = [...new Set(ws.flatMap(depsOf))];
+  if (!deps.length) return h('span');
+  return h('div', { className: 'row' }, ['', ...deps].map(d => h('button', { className: S.dept === d ? 'p' : '', onclick: () => { S.dept = d; render(); } }, d || 'Всички')));
+}
+
 // ---------- Служители ----------
 async function vEmps() {
   const ws = await api('/api/workers');
-  const f = { name: h('input', { placeholder: 'Име' }), sal: h('input', { type: 'number', placeholder: 'Месечна заплата' }), card: h('input', { placeholder: 'Карта' }), bio: h('input', { placeholder: 'Биометрично ID' }) };
-  const t = h('table', {}, h('tr', {}, ['Име', 'Месечна заплата', 'Карта', 'Биометрично ID', '', ''].map(x => h('th', {}, x))));
+  const dl = h('datalist', { id: 'deps' }, depList(ws).map(d => h('option', { value: d })));
+  const depIn = v => { const i = h('input', { value: v || '', placeholder: 'Отдел(и), със запетая' }); i.setAttribute('list', 'deps'); return i; };
+  const f = { name: h('input', { placeholder: 'Име' }), dep: depIn(''), sal: h('input', { type: 'number', placeholder: 'Месечна заплата' }), card: h('input', { placeholder: 'Карта' }), bio: h('input', { placeholder: 'Биометрично ID' }) };
+  const t = h('table', {}, h('tr', {}, ['Име', 'Отдел', 'Месечна заплата', 'Карта', 'Биометрично ID', '', ''].map(x => h('th', {}, x))));
   ws.forEach(w => {
-    const i = { n: h('input', { value: w.name }), s: h('input', { type: 'number', value: w.monthly_salary }), c: h('input', { value: w.card_token || '' }), b: h('input', { value: w.biometric_id || '' }) };
-    t.append(h('tr', {}, h('td', {}, i.n), h('td', {}, i.s), h('td', {}, i.c), h('td', {}, i.b),
-      h('td', {}, h('button', { onclick: async () => { try { await api('/api/workers/' + w.id, { method: 'PUT', body: { name: i.n.value, monthly_salary: i.s.value, card_token: i.c.value, biometric_id: i.b.value } }); alert('Запазено'); } catch (e) { alert(e.message); } } }, 'Запази')),
+    const i = { n: h('input', { value: w.name }), d: depIn(w.department), s: h('input', { type: 'number', value: w.monthly_salary }), c: h('input', { value: w.card_token || '' }), b: h('input', { value: w.biometric_id || '' }) };
+    t.append(h('tr', {}, h('td', {}, i.n), h('td', {}, i.d), h('td', {}, i.s), h('td', {}, i.c), h('td', {}, i.b),
+      h('td', {}, h('button', { onclick: async () => { try { await api('/api/workers/' + w.id, { method: 'PUT', body: { name: i.n.value, department: i.d.value, monthly_salary: i.s.value, card_token: i.c.value, biometric_id: i.b.value } }); alert('Запазено'); } catch (e) { alert(e.message); } } }, 'Запази')),
       h('td', {}, h('button', { onclick: async () => { if (confirm('Скриване на ' + w.name + '?')) { await api('/api/workers/' + w.id, { method: 'DELETE' }); render(); } } }, '✕'))));
   });
-  return h('div', {},
-    h('div', { className: 'card' }, h('div', { className: 'row' }, f.name, f.sal, f.card, f.bio,
-      h('button', { className: 'p', onclick: async () => { try { await api('/api/workers', { method: 'POST', body: { name: f.name.value, monthly_salary: f.sal.value, card_token: f.card.value, biometric_id: f.bio.value } }); render(); } catch (e) { alert(e.message); } } }, 'Добави'))),
+  return h('div', {}, dl,
+    h('p', { className: 'mu' }, 'Страница за служителите (изпрати им този адрес): ', h('b', {}, location.origin + '/schedule')),
+    h('div', { className: 'card' }, h('div', { className: 'row' }, f.name, f.dep, f.sal, f.card, f.bio,
+      h('button', { className: 'p', onclick: async () => { try { await api('/api/workers', { method: 'POST', body: { name: f.name.value, department: f.dep.value, monthly_salary: f.sal.value, card_token: f.card.value, biometric_id: f.bio.value } }); render(); } catch (e) { alert(e.message); } } }, 'Добави'))),
     h('div', { className: 'card scroll' }, t));
 }
+
+// ---------- Смени (създаване и редакция) ----------
+async function vShifts() {
+  const [T, ws] = await Promise.all([api('/api/shift-types'), api('/api/workers')]);
+  const deps = depList(ws);
+  const depSel = v => h('select', {}, h('option', { value: '' }, 'За всички отдели'), deps.map(d => h('option', { value: d, selected: d === v }, d)));
+  const mk = x => ({ code: x.code ? x.code.value : undefined, start_time: x.st.value, end_time: x.en.value, color: x.col.value, department: x.dep.value });
+  const f = { code: h('input', { placeholder: 'Кратко име', maxLength: 4, style: 'width:110px' }), st: h('input', { type: 'time', value: '08:00' }), en: h('input', { type: 'time', value: '16:00' }), col: h('input', { type: 'color', value: '#f59e0b', style: 'width:54px;padding:2px' }), dep: depSel('') };
+  const t = h('table', {}, h('tr', {}, ['Смяна', 'Начало', 'Край', 'Часове', 'Цвят', 'Отдел', '', ''].map(x => h('th', {}, x))));
+  Object.entries(T).forEach(([code, v]) => {
+    const x = { st: h('input', { type: 'time', value: v.start_time }), en: h('input', { type: 'time', value: v.end_time }), col: h('input', { type: 'color', value: v.color, style: 'width:54px;padding:2px' }), dep: depSel(v.department || '') };
+    t.append(h('tr', {}, h('td', {}, h('span', { className: 'b', style: 'background:' + v.color }, code)), h('td', {}, x.st), h('td', {}, x.en), h('td', {}, v.h), h('td', {}, x.col), h('td', {}, x.dep),
+      h('td', {}, h('button', { onclick: async () => { try { await api('/api/shift-types/' + encodeURIComponent(code), { method: 'PUT', body: mk(x) }); render(); } catch (e) { alert(e.message); } } }, 'Запази')),
+      h('td', {}, h('button', { onclick: async () => { if (confirm('Изтриване на смяна ' + code + '?')) { try { await api('/api/shift-types/' + encodeURIComponent(code), { method: 'DELETE' }); render(); } catch (e) { alert(e.message); } } } }, '✕'))));
+  });
+  return h('div', {},
+    h('div', { className: 'card' }, h('b', {}, 'Нова смяна'), h('p', { className: 'mu' }, 'Кратко име е това, което се вижда в графика (например С1). Часовете се смятат сами; ако краят е по-рано от началото, смяната минава през полунощ.'),
+      h('div', { className: 'row' }, f.code, f.st, '–', f.en, f.col, f.dep,
+        h('button', { className: 'p', onclick: async () => { try { await api('/api/shift-types', { method: 'POST', body: mk(f) }); render(); } catch (e) { alert(e.message); } } }, 'Добави'))),
+    h('div', { className: 'card scroll' }, t, h('p', { className: 'mu' }, 'Промяната на часовете важи за новите смени. Вече сложените в графика запазват часовете си.')));
+}
+
 render();
 </script>
 </body>

@@ -11,13 +11,17 @@ app.use(express.json());
 // ---------- Настройки ----------
 const TZ = process.env.TZ_NAME || 'Europe/Sofia';
 const MONTH_HOURS = 168; // стандартен месец за часова ставка
-// Смени за графика. Ключът е това, което се показва в клетката. Променяй свободно.
-const PRESETS = {
-  'Д': { t: '08–16', h: 8 },
-  'В': { t: '16–24', h: 8 },
-  'Н': { t: '00–08', h: 8 },
-  'Ц': { t: '08–20', h: 12 }
-};
+// Смените се пазят в таблица shift_types (създават се от таблото, раздел „Смени“).
+const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+const hoursBetween = (a, b) => { let d = toMin(b) - toMin(a); if (d <= 0) d += 1440; return Math.round(d / 6) / 10; };
+const isTime = s => /^([01]\d|2[0-3]):[0-5]\d$/.test(s || '');
+const isColor = s => /^#[0-9a-fA-F]{6}$/.test(s || '');
+async function loadTypes(db = pool) {
+  const r = await db.query('SELECT code, start_time, end_time, hours, color, department FROM shift_types ORDER BY created_at, code');
+  const o = {};
+  r.rows.forEach(x => o[x.code] = { t: `${x.start_time}–${x.end_time}`, start_time: x.start_time, end_time: x.end_time, h: Number(x.hours), color: x.color, department: x.department });
+  return o;
+}
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -56,6 +60,21 @@ app.post('/api/hardware/scan', async (req, res) => {
   } catch (e) { fail(res, e); }
 });
 
+// ---------- Обща страница за служителите: избират името си и виждат само смените си (без заплати) ----------
+app.get('/schedule', (req, res) => res.sendFile(path.join(__dirname, 'schedule.html')));
+app.get('/api/public/workers', async (req, res) => {
+  try { res.json((await pool.query('SELECT id, name FROM workers WHERE is_active ORDER BY name')).rows); }
+  catch (e) { fail(res, e); }
+});
+app.get('/api/public/schedule', async (req, res) => {
+  const { worker_id, from, to } = req.query;
+  if (!worker_id || !isDate(from) || !isDate(to)) return bad(res, 'Невалидни данни');
+  try {
+    const r = await pool.query('SELECT day::text AS day, label, hours FROM shifts WHERE worker_id=$1 AND day BETWEEN $2 AND $3', [worker_id, from, to]);
+    res.json({ types: await loadTypes(), rows: r.rows });
+  } catch (e) { fail(res, e); }
+});
+
 // ---------- Всичко отдолу е с парола (HTTP Basic, потребителското име се игнорира) ----------
 app.use((req, res, next) => {
   const pass = process.env.ADMIN_PASSWORD;
@@ -67,34 +86,44 @@ app.use((req, res, next) => {
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
 // ---------- Служители ----------
+const newToken = () => crypto.randomBytes(24).toString('hex');
+const WCOLS = 'id, name, department, monthly_salary, card_token, biometric_id, view_token';
+
 app.get('/api/workers', async (req, res) => {
   try {
-    const r = await pool.query('SELECT id, name, monthly_salary, card_token, biometric_id FROM workers WHERE is_active ORDER BY name');
+    const r = await pool.query(`SELECT ${WCOLS} FROM workers WHERE is_active ORDER BY name`);
     res.json(r.rows);
   } catch (e) { fail(res, e); }
 });
 
 app.post('/api/workers', async (req, res) => {
-  const { name, monthly_salary, card_token, biometric_id } = req.body || {};
+  const { name, department, monthly_salary, card_token, biometric_id } = req.body || {};
   if (!clean(name)) return bad(res, 'Липсва име');
   try {
     const r = await pool.query(
-      'INSERT INTO workers (name, monthly_salary, card_token, biometric_id, is_active) VALUES ($1,$2,$3,$4,true) RETURNING id',
-      [clean(name), Number(monthly_salary) || 0, clean(card_token), clean(biometric_id)]
+      'INSERT INTO workers (name, department, monthly_salary, card_token, biometric_id, view_token, is_active) VALUES ($1,$2,$3,$4,$5,$6,true) RETURNING id',
+      [clean(name), clean(department), Number(monthly_salary) || 0, clean(card_token), clean(biometric_id), newToken()]
     );
     res.json({ success: true, id: r.rows[0].id });
   } catch (e) { fail(res, e); }
 });
 
 app.put('/api/workers/:id', async (req, res) => {
-  const { name, monthly_salary, card_token, biometric_id } = req.body || {};
+  const { name, department, monthly_salary, card_token, biometric_id } = req.body || {};
   if (!clean(name)) return bad(res, 'Липсва име');
   try {
     await pool.query(
-      'UPDATE workers SET name=$1, monthly_salary=$2, card_token=$3, biometric_id=$4 WHERE id=$5',
-      [clean(name), Number(monthly_salary) || 0, clean(card_token), clean(biometric_id), req.params.id]
+      'UPDATE workers SET name=$1, department=$2, monthly_salary=$3, card_token=$4, biometric_id=$5 WHERE id=$6',
+      [clean(name), clean(department), Number(monthly_salary) || 0, clean(card_token), clean(biometric_id), req.params.id]
     );
     res.json({ success: true });
+  } catch (e) { fail(res, e); }
+});
+
+app.post('/api/workers/:id/new-link', async (req, res) => { // старият линк спира да работи
+  try {
+    const r = await pool.query('UPDATE workers SET view_token=$1 WHERE id=$2 RETURNING view_token', [newToken(), req.params.id]);
+    res.json({ success: true, view_token: r.rows[0]?.view_token });
   } catch (e) { fail(res, e); }
 });
 
@@ -103,15 +132,57 @@ app.delete('/api/workers/:id', async (req, res) => { // скрива, не тр�
   catch (e) { fail(res, e); }
 });
 
+// ---------- Видове смени ----------
+const readType = b => {
+  b = b || {};
+  const code = clean(b.code);
+  if (!code || code.length > 4 || !isTime(b.start_time) || !isTime(b.end_time) || !isColor(b.color)) return null;
+  return { code, st: b.start_time, en: b.end_time, h: hoursBetween(b.start_time, b.end_time), color: b.color, dep: clean(b.department) };
+};
+
+app.get('/api/shift-types', async (req, res) => {
+  try { res.json(await loadTypes()); } catch (e) { fail(res, e); }
+});
+
+app.post('/api/shift-types', async (req, res) => {
+  const t = readType(req.body);
+  if (!t) return bad(res, 'Попълни кратко име (до 4 знака), начало, край и цвят');
+  try {
+    await pool.query('INSERT INTO shift_types (code, start_time, end_time, hours, color, department) VALUES ($1,$2,$3,$4,$5,$6)', [t.code, t.st, t.en, t.h, t.color, t.dep]);
+    res.json({ success: true });
+  } catch (e) { if (e.code === '23505') return bad(res, 'Вече има смяна с това кратко име'); fail(res, e); }
+});
+
+app.put('/api/shift-types/:code', async (req, res) => { // важи за новите смени; вече сложените запазват часовете си
+  const t = readType({ ...req.body, code: req.params.code });
+  if (!t) return bad(res, 'Невалидни данни');
+  try {
+    await pool.query('UPDATE shift_types SET start_time=$2, end_time=$3, hours=$4, color=$5, department=$6 WHERE code=$1', [t.code, t.st, t.en, t.h, t.color, t.dep]);
+    res.json({ success: true });
+  } catch (e) { fail(res, e); }
+});
+
+app.delete('/api/shift-types/:code', async (req, res) => {
+  try {
+    const u = await pool.query('SELECT 1 FROM shifts WHERE label=$1 LIMIT 1', [req.params.code]);
+    if (u.rows.length) return res.status(409).json({ error: 'Смяната е използвана в графика. Първо я изтрий оттам.' });
+    await pool.query('DELETE FROM shift_types WHERE code=$1', [req.params.code]);
+    res.json({ success: true });
+  } catch (e) { fail(res, e); }
+});
+
 // ---------- График ----------
 app.get('/api/shifts', async (req, res) => {
   const { from, to } = req.query;
   if (!isDate(from) || !isDate(to)) return bad(res, 'Невалидни дати');
   try {
     const r = await pool.query('SELECT worker_id, day::text AS day, label, hours FROM shifts WHERE day BETWEEN $1 AND $2', [from, to]);
-    res.json({ presets: PRESETS, rows: r.rows });
+    res.json({ presets: await loadTypes(), rows: r.rows });
   } catch (e) { fail(res, e); }
 });
+
+const UPSERT = `INSERT INTO shifts (worker_id, day, label, hours) VALUES ($1,$2,$3,$4)
+  ON CONFLICT (worker_id, day) DO UPDATE SET label=EXCLUDED.label, hours=EXCLUDED.hours`;
 
 app.put('/api/shifts', async (req, res) => {
   const { worker_id, day, label } = req.body || {};
@@ -120,12 +191,9 @@ app.put('/api/shifts', async (req, res) => {
     if (!label) {
       await pool.query('DELETE FROM shifts WHERE worker_id=$1 AND day=$2', [worker_id, day]);
     } else {
-      if (!PRESETS[label]) return bad(res, 'Непозната смяна');
-      await pool.query(
-        `INSERT INTO shifts (worker_id, day, label, hours) VALUES ($1,$2,$3,$4)
-         ON CONFLICT (worker_id, day) DO UPDATE SET label=EXCLUDED.label, hours=EXCLUDED.hours`,
-        [worker_id, day, label, PRESETS[label].h]
-      );
+      const T = await loadTypes();
+      if (!T[label]) return bad(res, 'Непозната смяна');
+      await pool.query(UPSERT, [worker_id, day, label, T[label].h]);
     }
     res.json({ success: true });
   } catch (e) { fail(res, e); }
@@ -134,18 +202,16 @@ app.put('/api/shifts', async (req, res) => {
 app.put('/api/shifts/bulk', async (req, res) => {
   const items = (req.body || {}).items;
   if (!Array.isArray(items) || !items.length || items.length > 400) return bad(res, 'Невалидни данни');
-  for (const it of items) {
-    if (!it.worker_id || !isDate(it.day) || (it.label && !PRESETS[it.label])) return bad(res, 'Невалидни данни');
-  }
   const client = await pool.connect();
   try {
+    const T = await loadTypes(client);
+    for (const it of items) {
+      if (!it.worker_id || !isDate(it.day) || (it.label && !T[it.label])) return bad(res, 'Невалидни данни');
+    }
     await client.query('BEGIN');
     for (const it of items) {
       if (!it.label) await client.query('DELETE FROM shifts WHERE worker_id=$1 AND day=$2', [it.worker_id, it.day]);
-      else await client.query(
-        `INSERT INTO shifts (worker_id, day, label, hours) VALUES ($1,$2,$3,$4)
-         ON CONFLICT (worker_id, day) DO UPDATE SET label=EXCLUDED.label, hours=EXCLUDED.hours`,
-        [it.worker_id, it.day, it.label, PRESETS[it.label].h]);
+      else await client.query(UPSERT, [it.worker_id, it.day, it.label, T[it.label].h]);
     }
     await client.query('COMMIT');
     res.json({ success: true });
@@ -192,7 +258,7 @@ app.post('/api/payroll/calculate', async (req, res) => {
   const useSchedule = source === 'schedule';
   const client = await pool.connect();
   try {
-    const workers = (await client.query('SELECT id, name, monthly_salary FROM workers WHERE is_active ORDER BY name')).rows;
+    const workers = (await client.query('SELECT id, name, department, monthly_salary FROM workers WHERE is_active ORDER BY name')).rows;
     const byWorker = {}; // id -> [{day, h}]
 
     if (useSchedule) {
@@ -220,7 +286,7 @@ app.post('/api/payroll/calculate', async (req, res) => {
       }
       const rate = Number(w.monthly_salary) / MONTH_HOURS;
       const amount = r2(total * rate), advance = r2(adv * rate), salary = r2(amount - advance);
-      rows.push({ worker_id: w.id, name: w.name, hours: r2(total), advance_hours: r2(adv), amount, advance, salary });
+      rows.push({ worker_id: w.id, name: w.name, department: w.department, hours: r2(total), advance_hours: r2(adv), amount, advance, salary });
       await client.query('DELETE FROM payroll_payouts WHERE worker_id=$1 AND period_start=$2 AND period_end=$3', [w.id, start_date, end_date]);
       if (total > 0) {
         await client.query(

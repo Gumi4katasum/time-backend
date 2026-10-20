@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Моят график</title>
+<style>
+:root{--bg:#f3f4f8;--card:#fff;--tx:#1b1f2a;--mu:#6c7488;--ac:#4f46e5;--bd:#e3e6ee}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1218;--card:#181c25;--tx:#e9ecf3;--mu:#98a0b3;--ac:#8b85ff;--bd:#272c38}}
+*{box-sizing:border-box}body{margin:0;font:16px system-ui,sans-serif;background:var(--bg);color:var(--tx)}
+main{max-width:520px;margin:auto;padding:14px}
+.brand{display:flex;gap:10px;align-items:center;margin-bottom:14px;font-size:17px;font-weight:700}
+.logo{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--ac),#a99bff);color:#fff;display:grid;place-items:center;font-weight:800}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px}
+select,button{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px 12px}
+select{width:100%;margin-bottom:12px}.row{display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:10px}
+.d{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--bd)}
+.b{color:#fff;font-weight:700;border-radius:8px;padding:4px 10px}.mu{color:var(--mu)}
+</style>
+</head>
+<body>
+<main>
+<div class="brand"><span class="logo">Ф</span>ФЕРБИНДУНГ ГРУП ЕООД</div>
+<div class="card">
+<select id="w"><option value="">Избери името си…</option></select>
+<div id="out"></div>
+</div>
+</main>
+<script>
+const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+const addDays = (s, n) => { const d = new Date(s + 'T12:00'); d.setDate(d.getDate() + n); return iso(d); };
+const monday = d => { d = new Date(d); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return iso(d); };
+const NM = ['Понеделник', 'Вторник', 'Сряда', 'Четвъртък', 'Петък', 'Събота', 'Неделя'];
+let week = monday(new Date());
+const sel = document.getElementById('w'), out = document.getElementById('out');
+const store = { get: () => { try { return localStorage.getItem('wid') || ''; } catch (e) { return ''; } }, set: v => { try { localStorage.setItem('wid', v); } catch (e) {} } };
+const el = (t, c, x) => { const e = document.createElement(t); if (c) e.className = c; if (x != null) e.textContent = x; return e; };
+
+async function show() {
+  out.innerHTML = '';
+  if (!sel.value) return;
+  const days = [...Array(7)].map((_, i) => addDays(week, i));
+  let d;
+  try { const r = await fetch(`/api/public/schedule?worker_id=${encodeURIComponent(sel.value)}&from=${days[0]}&to=${days[6]}`); d = await r.json(); if (!r.ok) throw 0; }
+  catch (e) { out.append(el('p', 'mu', 'Грешка при зареждане.')); return; }
+  const map = {}; d.rows.forEach(r => map[r.day] = r);
+  const nav = el('div', 'row');
+  const prev = el('button', '', '◀'), next = el('button', '', '▶');
+  prev.onclick = () => { week = addDays(week, -7); show(); }; next.onclick = () => { week = addDays(week, 7); show(); };
+  nav.append(prev, el('b', '', days[0].slice(8) + '.' + days[0].slice(5, 7) + ' – ' + days[6].slice(8) + '.' + days[6].slice(5, 7)), next);
+  out.append(nav);
+  let tot = 0;
+  days.forEach((day, i) => {
+    const r = map[day], row = el('div', 'd'), left = el('div');
+    left.append(el('b', '', NM[i]), el('div', 'mu', day.slice(8) + '.' + day.slice(5, 7)));
+    row.append(left);
+    if (r) {
+      const t = d.types[r.label] || {}; tot += Number(r.hours);
+      const b = el('div', 'b', r.label + (t.t ? '  ' + t.t : '')); b.style.background = t.color || '#4f46e5'; row.append(b);
+    } else row.append(el('span', 'mu', 'Почивен ден'));
+    out.append(row);
+  });
+  out.append(el('p', 'mu', 'Общо часове: ' + tot));
+}
+
+(async () => {
+  try {
+    const ws = await (await fetch('/api/public/workers')).json();
+    ws.forEach(w => { const o = el('option', '', w.name); o.value = w.id; sel.append(o); });
+    const saved = store.get(); if (saved && ws.some(w => String(w.id) === saved)) sel.value = saved;
+  } catch (e) { out.append(el('p', 'mu', 'Грешка при зареждане.')); }
+  sel.onchange = () => { store.set(sel.value); show(); };
+  show();
+})();
+</script>
+</body>
+</html>
