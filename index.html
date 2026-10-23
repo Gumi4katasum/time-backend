@@ -303,4 +303,21 @@ async function vShifts() {
   const depSel = v => h('select', {}, h('option', { value: '' }, 'За всички отдели'), deps.map(d => h('option', { value: d, selected: d === v }, d)));
   const mk = x => ({ code: x.code ? x.code.value : undefined, start_time: x.st.value, end_time: x.en.value, color: x.col.value, department: x.dep.value });
   const f = { code: h('input', { placeholder: 'Име на смяната', maxLength: 20, style: 'width:160px' }), st: h('input', { type: 'time', value: '08:00' }), en: h('input', { type: 'time', value: '16:00' }), col: h('input', { type: 'color', value: '#f59e0b', style: 'width:54px;padding:2px' }), dep: depSel('') };
-  const
+  const t = h('table', {}, h('tr', {}, ['Смяна', 'Начало', 'Край', 'Часове', 'Цвят', 'Отдел', '', ''].map(x => h('th', {}, x))));
+  Object.entries(T).forEach(([code, v]) => {
+    const x = { st: h('input', { type: 'time', value: v.start_time }), en: h('input', { type: 'time', value: v.end_time }), col: h('input', { type: 'color', value: v.color, style: 'width:54px;padding:2px' }), dep: depSel(v.department || '') };
+    t.append(h('tr', {}, h('td', {}, h('span', { className: 'b', style: 'background:' + v.color }, code)), h('td', {}, x.st), h('td', {}, x.en), h('td', {}, v.h), h('td', {}, x.col), h('td', {}, x.dep),
+      h('td', {}, h('button', { onclick: async () => { try { await api('/api/shift-types/' + encodeURIComponent(code), { method: 'PUT', body: mk(x) }); render(); } catch (e) { alert(e.message); } } }, 'Запази')),
+      h('td', {}, h('button', { onclick: async () => { if (confirm('Изтриване на смяна ' + code + '?')) { try { await api('/api/shift-types/' + encodeURIComponent(code), { method: 'DELETE' }); render(); } catch (e) { alert(e.message); } } } }, '✕'))));
+  });
+  return h('div', {},
+    h('div', { className: 'card' }, h('b', {}, 'Нова смяна'), h('p', { className: 'mu' }, 'Името се вижда в графика (в клетката се показват първите знаци), например „Бар сутрин“. Часовете се смятат сами; ако краят е по-рано от началото, смяната минава през полунощ.'),
+      h('div', { className: 'row' }, f.code, f.st, '–', f.en, f.col, f.dep,
+        h('button', { className: 'p', onclick: async () => { try { await api('/api/shift-types', { method: 'POST', body: mk(f) }); render(); } catch (e) { alert(e.message); } } }, 'Добави'))),
+    h('div', { className: 'card scroll' }, t, h('p', { className: 'mu' }, 'Промяната на часовете важи за новите смени. Вече сложените в графика запазват часовете си.')));
+}
+
+render();
+</script>
+</body>
+</html>
