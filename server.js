@@ -147,6 +147,53 @@ app.delete('/api/workers/:id', async (req, res) => { // скрива, не тр�
   catch (e) { fail(res, e); }
 });
 
+// ---------- Аванси (ръчно въведени) ----------
+app.get('/api/advances', async (req, res) => {
+  const { from, to } = req.query;
+  if (!isDate(from) || !isDate(to)) return bad(res, 'Невалидни дати');
+  try {
+    const r = await pool.query(
+      `SELECT a.id, a.worker_id, a.day::text AS day, a.amount, a.note, w.name
+       FROM advances a JOIN workers w ON w.id = a.worker_id
+       WHERE a.day BETWEEN $1 AND $2
+       ORDER BY a.day, w.name`, [from, to]);
+    res.json(r.rows);
+  } catch (e) { fail(res, e); }
+});
+
+app.post('/api/advances', async (req, res) => {
+  const { worker_id, day, amount, note } = req.body || {};
+  if (!worker_id || !isDate(day)) return bad(res, 'Невалидни данни');
+  const n = Number(amount);
+  if (!(n > 0)) return bad(res, 'Сумата трябва да е положителна');
+  try {
+    const r = await pool.query(
+      'INSERT INTO advances (worker_id, day, amount, note) VALUES ($1,$2,$3,$4) RETURNING id',
+      [worker_id, day, n, clean(note)]);
+    res.json({ success: true, id: r.rows[0].id });
+  } catch (e) { fail(res, e); }
+});
+
+app.delete('/api/advances/:id', async (req, res) => {
+  try { await pool.query('DELETE FROM advances WHERE id=$1', [req.params.id]); res.json({ success: true }); }
+  catch (e) { fail(res, e); }
+});
+
+app.get('/api/advances/summary', async (req, res) => {
+  const { month, advance_until } = req.query;
+  if (!/^\d{4}-\d{2}$/.test(month || '') || !isDate(advance_until)) return bad(res, 'Невалидни данни');
+  const start = month + '-01';
+  const end = month + '-31';
+  try {
+    const workers = (await pool.query('SELECT id, name, department FROM workers WHERE is_active ORDER BY name')).rows;
+    const manual = (await pool.query(
+      `SELECT worker_id, COALESCE(SUM(amount),0) AS s FROM advances
+       WHERE day BETWEEN $1 AND $2 GROUP BY worker_id`, [start, end])).rows;
+    const mMap = {}; manual.forEach(x => mMap[x.worker_id] = Number(x.s));
+    res.json(workers.map(w => ({ ...w, manual_advance: mMap[w.id] || 0 })));
+  } catch (e) { fail(res, e); }
+});
+
 // ---------- Видове смени ----------
 const readType = b => {
   b = b || {};
@@ -277,6 +324,14 @@ app.post('/api/payroll/calculate', async (req, res) => {
     const workers = (await client.query('SELECT id, name, department, monthly_salary FROM workers WHERE is_active ORDER BY name')).rows;
     const rates = {};
     (await client.query('SELECT worker_id, department, hourly_rate FROM worker_rates')).rows.forEach(x => rates[x.worker_id + '|' + x.department] = Number(x.hourly_rate));
+    
+    // Вземаме ръчно въведените аванси
+    const advMap = {};
+    (await client.query(
+      `SELECT worker_id, COALESCE(SUM(amount),0) AS s FROM advances
+       WHERE day BETWEEN $1 AND $2 GROUP BY worker_id`, [start_date, advance_until]
+    )).rows.forEach(x => advMap[x.worker_id] = Number(x.s));
+
     const sched = (await client.query('SELECT worker_id, day::text AS day, hours, department FROM shifts WHERE day BETWEEN $1 AND $2', [start_date, end_date])).rows;
     const depOfDay = {};
     sched.forEach(x => depOfDay[x.worker_id + '|' + x.day] = x.department);
@@ -313,7 +368,13 @@ app.post('/api/payroll/calculate', async (req, res) => {
         return { department: d, hours: r2(g.h), advance_hours: r2(g.adv), rate: r2(rate), amount, advance, salary: r2(amount - advance) };
       });
       const sum = k => r2(parts.reduce((a, p) => a + p[k], 0));
-      const hours = sum('hours'), amount = sum('amount'), advance = sum('advance'), salary = sum('salary');
+      const hours = sum('hours'), amount = sum('amount');
+      
+      // Обединяваме изчисления аванс с ръчно въведения
+      const manualAdvance = r2(advMap[w.id] || 0);
+      const advance = r2(sum('advance') + manualAdvance);
+      const salary = r2(amount - advance);
+
       rows.push({ worker_id: w.id, name: w.name, department: w.department, parts, hours, advance_hours: sum('advance_hours'), amount, advance, salary });
       await client.query('DELETE FROM payroll_payouts WHERE worker_id=$1 AND period_start=$2 AND period_end=$3', [w.id, start_date, end_date]);
       if (hours > 0) {
