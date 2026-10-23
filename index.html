@@ -31,7 +31,7 @@ td.c button{width:56px;padding:0 2px;font-size:12px;overflow:hidden;text-overflo
 .adv-row td { text-align: left; }
 .adv-chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .adv-chip { background: var(--bg); border: 1px solid var(--bd); padding: 2px 6px; border-radius: 6px; font-size: 12px; display: flex; align-items: center; gap: 4px; }
-.adv-chip button { padding: 0 4px; border: none; background: transparent; color: var(--no); font-weight: bold; cursor: pointer; }
+.adv-chip button { padding: 0 4px; border: none; background: transparent; color: var(--no); font-weight: bold; cursor: pointer; font-size: 14px;}
 </style>
 </head>
 <body>
@@ -57,8 +57,8 @@ const monday = d => { d = new Date(d); d.setDate(d.getDate() - (d.getDay() + 6) 
 const depsOf = o => String(o.department || '').split(',').map(x => x.trim()).filter(Boolean);
 const S = { dept: '', brush: 'Д', tab: 'sched', week: monday(new Date()), month: iso(new Date()).slice(0, 7), advDay: 15, source: 'scans', pay: null, advDaySel: iso(new Date()) };
 const TABS = { sched: 'График', shifts: 'Смени', pay: 'Заплати', adv: 'Аванси', live: 'На живо', emps: 'Служители' };
-const COMPANY = 'ФЕРБИНДУНГ ГРУП ЕООД';   // <- сложи името на фирмата
-const LOGO = '';                 // <- линк към картинка (по желание); ако е празно, се показва първата буква
+const COMPANY = 'ФЕРБИНДУНГ ГРУП ЕООД';   
+const LOGO = '';                 
 document.title = COMPANY;
 document.getElementById('bn').textContent = COMPANY;
 document.getElementById('logo').append(LOGO ? h('img', { src: LOGO, style: 'width:100%;height:100%;object-fit:cover' }) : COMPANY[0]);
@@ -71,7 +71,7 @@ async function render() {
   catch (e) { app.innerHTML = ''; app.append(h('p', { className: 'err' }, e.message)); }
 }
 
-// ---------- График: избери смяна от лентата, после докосвай клетки ----------
+// ---------- График ----------
 async function vSched() {
   const days = [...Array(7)].map((_, i) => addDays(S.week, i)), nm = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'];
   const [all, sh] = await Promise.all([api('/api/workers'), api(`/api/shifts?from=${days[0]}&to=${days[6]}`)]);
@@ -101,7 +101,7 @@ async function vSched() {
   const target = () => S.brush === 'cycle' ? null : S.brush === 'clear' ? '' : S.brush;
   const apply = async (pairs, v) => {
     const deps = pairs.map(([w]) => v ? depFor(w) : '');
-    if (deps.includes(undefined)) { alert('Този човек е в няколко отдела. Избери отдела от бутоните най-горе, за да се запише в кой работи.'); return; }
+    if (deps.includes(undefined)) { alert('Този човек е в няколко отдела. Избери отдела от бутоните най-горе.'); return; }
     const old = pairs.map(([w, d]) => [map[w.id + '|' + d] || '', dmap[w.id + '|' + d] || '']);
     pairs.forEach(([w, d], i) => { map[w.id + '|' + d] = v; dmap[w.id + '|' + d] = deps[i] || ''; }); upd();
     try { await api('/api/shifts/bulk', { method: 'PUT', body: { items: pairs.map(([w, d], i) => ({ worker_id: w.id, day: d, label: v, department: deps[i] })) } }); }
@@ -144,7 +144,7 @@ async function vSched() {
       } }, 'Копирай предишната седмица')),
     deptBar(all),
     bar,
-    h('p', { className: 'mu' }, 'Избери отдел, после смяна, и докосвай клетки. Смяната се записва към избрания отдел. Докосни име за цялата седмица на човека, или ден най-горе за всички за този ден. Кой човек е в повече от един отдел, за него първо избери отдела.'),
+    h('p', { className: 'mu' }, 'Избери отдел, после смяна, и докосвай клетки. Смяната се записва към избрания отдел.'),
     h('div', { className: 'scroll' }, table));
 }
 
@@ -154,15 +154,21 @@ async function vPay() {
   const [y, m] = S.month.split('-').map(Number), last = new Date(y, m, 0).getDate();
   const body = () => ({ start_date: S.month + '-01', end_date: S.month + '-' + String(last).padStart(2, '0'), advance_until: S.month + '-' + String(S.advDay).padStart(2, '0'), source: S.source });
   const out = h('div', { className: 'scroll' });
+  
   const show = () => {
     if (!S.pay) return;
     const rowsF = S.pay.map(r => ({ ...r, parts: (r.parts || []).filter(p => !S.dept || p.department === S.dept) })).filter(r => r.parts.length);
-    const t = h('table', {}, h('tr', {}, ['Служител', 'Отдел', 'Часове', 'Ставка €', 'Общо €', 'Аванс €', 'Заплата €'].map(x => h('th', {}, x))));
+    
+    // Добавяме колона "Ръчен аванс" за прегледност
+    const t = h('table', {}, h('tr', {}, ['Служител', 'Отдел', 'Часове', 'Ставка €', 'Общо €', 'Аванс (ръчен + часове) €', 'Заплата €'].map(x => h('th', {}, x))));
     const T = [0, 0, 0], f2 = n => n.toFixed(2);
+    
     rowsF.forEach(r => {
       r.parts.forEach((p, i) => t.append(h('tr', {}, h('td', {}, i === 0 ? r.name : ''), h('td', {}, p.department || '—'), h('td', {}, p.hours), h('td', {}, f2(p.rate)), h('td', {}, f2(p.amount)), h('td', {}, f2(p.advance)), h('td', {}, f2(p.salary)))));
       const sm = k => r.parts.reduce((a, p) => a + p[k], 0);
       T[0] += sm('amount'); T[1] += sm('advance'); T[2] += sm('salary');
+      
+      // Ако служителят е в няколко отдела, показваме обобщение
       if (r.parts.length > 1) t.append(h('tr', {}, h('td', {}, h('b', {}, 'Общо ' + r.name)), h('td'), h('td', {}, h('b', {}, +sm('hours').toFixed(2))), h('td'), h('td', {}, h('b', {}, f2(sm('amount')))), h('td', {}, h('b', {}, f2(sm('advance')))), h('td', {}, h('b', {}, f2(sm('salary'))))));
     });
     t.append(h('tr', {}, h('td', {}, h('b', {}, 'Всичко')), h('td'), h('td'), h('td'), h('td', {}, f2(T[0])), h('td', {}, f2(T[1])), h('td', {}, h('b', {}, f2(T[2])))));
@@ -178,7 +184,7 @@ async function vPay() {
         h('option', { value: 'scans', selected: S.source === 'scans' }, 'Часове от сканиранията'),
         h('option', { value: 'schedule', selected: S.source === 'schedule' }, 'Часове от графика')),
       h('button', { className: 'p', onclick: async () => { try { S.pay = (await api('/api/payroll/calculate', { method: 'POST', body: body() })).rows; show(); } catch (e) { alert(e.message); } } }, 'Изчисли')),
-    h('p', { className: 'mu' }, 'За всеки отдел: часове × ставката на човека в този отдел. Аванс = часовете от 1-во число до избрания ден + ръчно въведените аванси от таб „Аванси“. Заплата = общо за месеца − аванс.'),
+    h('p', { className: 'mu' }, 'Аванс = часовете от 1-во число до избрания ден + ръчно въведените аванси от таб „Аванси“. Заплата = общо за месеца − аванс.'),
     out);
 }
 
@@ -194,7 +200,6 @@ async function vAdv() {
   const byWorker = {};
   list.forEach(x => (byWorker[x.worker_id] ||= []).push(x));
 
-  // форма за нов аванс
   const fw = h('select', {}, h('option', { value: '' }, 'Избери служител…'), all.map(w => h('option', { value: w.id }, w.name)));
   const fday = h('input', { type: 'date', value: S.advDaySel || iso(new Date()) });
   const famt = h('input', { type: 'number', step: '0.01', placeholder: 'Сума €', style: 'width:110px' });
@@ -231,7 +236,7 @@ async function vAdv() {
           render();
         } catch (e) { alert(e.message); }
       } }, 'Добави')),
-    h('p', { className: 'mu' }, 'Тук въвеждаш ръчно дадените аванси (в брой). Те се приспадат автоматично в „Заплати“ заедно с изчисления по часове аванс.'),
+    h('p', { className: 'mu' }, 'Тук въвеждаш ръчно дадените аванси. Те се приспадат автоматично в „Заплати“ заедно с изчисления по часове аванс.'),
     h('div', { className: 'scroll' }, t));
 }
 
@@ -257,7 +262,7 @@ function deptBar(ws) {
 }
 
 // ---------- Служители ----------
-const mkRates = (depInput, init) => { // ставка на час за всеки отдел на човека
+const mkRates = (depInput, init) => { 
   const vals = { ...init }, box = h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' });
   const build = () => {
     box.innerHTML = '';
@@ -298,21 +303,4 @@ async function vShifts() {
   const depSel = v => h('select', {}, h('option', { value: '' }, 'За всички отдели'), deps.map(d => h('option', { value: d, selected: d === v }, d)));
   const mk = x => ({ code: x.code ? x.code.value : undefined, start_time: x.st.value, end_time: x.en.value, color: x.col.value, department: x.dep.value });
   const f = { code: h('input', { placeholder: 'Име на смяната', maxLength: 20, style: 'width:160px' }), st: h('input', { type: 'time', value: '08:00' }), en: h('input', { type: 'time', value: '16:00' }), col: h('input', { type: 'color', value: '#f59e0b', style: 'width:54px;padding:2px' }), dep: depSel('') };
-  const t = h('table', {}, h('tr', {}, ['Смяна', 'Начало', 'Край', 'Часове', 'Цвят', 'Отдел', '', ''].map(x => h('th', {}, x))));
-  Object.entries(T).forEach(([code, v]) => {
-    const x = { st: h('input', { type: 'time', value: v.start_time }), en: h('input', { type: 'time', value: v.end_time }), col: h('input', { type: 'color', value: v.color, style: 'width:54px;padding:2px' }), dep: depSel(v.department || '') };
-    t.append(h('tr', {}, h('td', {}, h('span', { className: 'b', style: 'background:' + v.color }, code)), h('td', {}, x.st), h('td', {}, x.en), h('td', {}, v.h), h('td', {}, x.col), h('td', {}, x.dep),
-      h('td', {}, h('button', { onclick: async () => { try { await api('/api/shift-types/' + encodeURIComponent(code), { method: 'PUT', body: mk(x) }); render(); } catch (e) { alert(e.message); } } }, 'Запази')),
-      h('td', {}, h('button', { onclick: async () => { if (confirm('Изтриване на смяна ' + code + '?')) { try { await api('/api/shift-types/' + encodeURIComponent(code), { method: 'DELETE' }); render(); } catch (e) { alert(e.message); } } } }, '✕'))));
-  });
-  return h('div', {},
-    h('div', { className: 'card' }, h('b', {}, 'Нова смяна'), h('p', { className: 'mu' }, 'Името се вижда в графика (в клетката се показват първите знаци), например „Бар сутрин“. Часовете се смятат сами; ако краят е по-рано от началото, смяната минава през полунощ.'),
-      h('div', { className: 'row' }, f.code, f.st, '–', f.en, f.col, f.dep,
-        h('button', { className: 'p', onclick: async () => { try { await api('/api/shift-types', { method: 'POST', body: mk(f) }); render(); } catch (e) { alert(e.message); } } }, 'Добави'))),
-    h('div', { className: 'card scroll' }, t, h('p', { className: 'mu' }, 'Промяната на часовете важи за новите смени. Вече сложените в графика запазват часовете си.')));
-}
-
-render();
-</script>
-</body>
-</html>
+  const
