@@ -11,7 +11,6 @@ app.use(express.json());
 // ---------- Настройки ----------
 const TZ = process.env.TZ_NAME || 'Europe/Sofia';
 const MONTH_HOURS = 168; // стандартен месец за часова ставка
-// Смените се пазят в таблица shift_types (създават се от таблото, раздел „Смени“).
 const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
 const hoursBetween = (a, b) => { let d = toMin(b) - toMin(a); if (d <= 0) d += 1440; return Math.round(d / 6) / 10; };
 const isTime = s => /^([01]\d|2[0-3]):[0-5]\d$/.test(s || '');
@@ -25,7 +24,6 @@ async function loadTypes(db = pool) {
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  // Ако хостингът на базата ползва самоподписан сертификат, сложи DB_SSL_INSECURE=1
   ssl: process.env.DB_SSL_INSECURE === '1' ? { rejectUnauthorized: false } : true
 });
 
@@ -35,13 +33,13 @@ const bad = (res, msg) => res.status(400).json({ error: msg });
 const isDate = s => /^\d{4}-\d{2}-\d{2}$/.test(s || '');
 const clean = v => (v == null || String(v).trim() === '') ? null : String(v).trim();
 const r2 = n => Math.round(n * 100) / 100;
-const dayOf = d => new Date(d).toLocaleDateString('sv-SE', { timeZone: TZ }); // YYYY-MM-DD
+const dayOf = d => new Date(d).toLocaleDateString('sv-SE', { timeZone: TZ });
 const safeEq = (a, b) => {
   const A = Buffer.from(String(a)), B = Buffer.from(String(b));
   return A.length === B.length && crypto.timingSafeEqual(A, B);
 };
 
-// ---------- API за терминали (ключ на устройството) ----------
+// ---------- API за терминали ----------
 app.post('/api/hardware/scan', async (req, res) => {
   const key = process.env.DEVICE_KEY;
   if (!key || !safeEq(req.get('x-device-key') || '', key)) return res.status(401).json({ error: 'Невалиден ключ' });
@@ -60,7 +58,7 @@ app.post('/api/hardware/scan', async (req, res) => {
   } catch (e) { fail(res, e); }
 });
 
-// ---------- Обща страница за служителите: избират името си и виждат само смените си (без заплати) ----------
+// ---------- Публична страница ----------
 app.get('/schedule', (req, res) => res.sendFile(path.join(__dirname, 'schedule.html')));
 app.get('/api/public/workers', async (req, res) => {
   try { res.json((await pool.query('SELECT id, name FROM workers WHERE is_active ORDER BY name')).rows); }
@@ -75,7 +73,7 @@ app.get('/api/public/schedule', async (req, res) => {
   } catch (e) { fail(res, e); }
 });
 
-// ---------- Всичко отдолу е с парола (HTTP Basic, потребителското име се игнорира) ----------
+// ---------- Админ защита ----------
 app.use((req, res, next) => {
   const pass = process.env.ADMIN_PASSWORD;
   const b = Buffer.from((req.headers.authorization || '').replace(/^Basic /, ''), 'base64').toString();
@@ -86,7 +84,7 @@ app.use((req, res, next) => {
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
 // ---------- Служители ----------
-async function saveRates(db, workerId, rates, deptText) { // ставка на час за всеки отдел на човека
+async function saveRates(db, workerId, rates, deptText) {
   const allowed = new Set(String(deptText || '').split(',').map(x => x.trim()).filter(Boolean));
   await db.query('DELETE FROM worker_rates WHERE worker_id=$1', [workerId]);
   for (const [d, val] of Object.entries(rates || {})) {
@@ -135,19 +133,19 @@ app.put('/api/workers/:id', async (req, res) => {
   } catch (e) { fail(res, e); }
 });
 
-app.post('/api/workers/:id/new-link', async (req, res) => { // старият линк спира да работи
+app.post('/api/workers/:id/new-link', async (req, res) => {
   try {
     const r = await pool.query('UPDATE workers SET view_token=$1 WHERE id=$2 RETURNING view_token', [newToken(), req.params.id]);
     res.json({ success: true, view_token: r.rows[0]?.view_token });
   } catch (e) { fail(res, e); }
 });
 
-app.delete('/api/workers/:id', async (req, res) => { // скрива, не трие историята
+app.delete('/api/workers/:id', async (req, res) => {
   try { await pool.query('UPDATE workers SET is_active=false WHERE id=$1', [req.params.id]); res.json({ success: true }); }
   catch (e) { fail(res, e); }
 });
 
-// ---------- Аванси (ръчно въведени) ----------
+// ---------- Аванси ----------
 app.get('/api/advances', async (req, res) => {
   const { from, to } = req.query;
   if (!isDate(from) || !isDate(to)) return bad(res, 'Невалидни дати');
@@ -215,7 +213,7 @@ app.post('/api/shift-types', async (req, res) => {
   } catch (e) { if (e.code === '23505') return bad(res, 'Вече има смяна с това кратко име'); fail(res, e); }
 });
 
-app.put('/api/shift-types/:code', async (req, res) => { // важи за новите смени; вече сложените запазват часовете си
+app.put('/api/shift-types/:code', async (req, res) => {
   const t = readType({ ...req.body, code: req.params.code });
   if (!t) return bad(res, 'Невалидни данни');
   try {
@@ -299,8 +297,7 @@ app.post('/api/shifts/copy-week', async (req, res) => {
   } catch (e) { fail(res, e); }
 });
 
-// ---------- Заплати: аванс и заплата по дни ----------
-// Часовете се броят по дни (ден на започване на работата). Аванс = часове от start_date до advance_until.
+// ---------- Заплати ----------
 function workedSegments(logs) {
   const out = [];
   let start = null;
@@ -325,7 +322,6 @@ app.post('/api/payroll/calculate', async (req, res) => {
     const rates = {};
     (await client.query('SELECT worker_id, department, hourly_rate FROM worker_rates')).rows.forEach(x => rates[x.worker_id + '|' + x.department] = Number(x.hourly_rate));
     
-    // Вземаме ръчно въведените аванси
     const advMap = {};
     (await client.query(
       `SELECT worker_id, COALESCE(SUM(amount),0) AS s FROM advances
@@ -335,11 +331,11 @@ app.post('/api/payroll/calculate', async (req, res) => {
     const sched = (await client.query('SELECT worker_id, day::text AS day, hours, department FROM shifts WHERE day BETWEEN $1 AND $2', [start_date, end_date])).rows;
     const depOfDay = {};
     sched.forEach(x => depOfDay[x.worker_id + '|' + x.day] = x.department);
-    const byWorker = {}; // id -> [{day, h, dept}]
+    const byWorker = {}; 
 
     if (useSchedule) {
       sched.forEach(x => (byWorker[x.worker_id] ||= []).push({ day: x.day, h: Number(x.hours), dept: x.department }));
-    } else { // от сканиранията; отделът се взема от смяната в графика за същия ден
+    } else { 
       const r = await client.query(
         `SELECT hl.worker_id, hl.timestamp, at.code
          FROM hardware_logs hl JOIN activity_types at ON hl.activity_type_id = at.id
@@ -354,7 +350,7 @@ app.post('/api/payroll/calculate', async (req, res) => {
     await client.query('BEGIN');
     for (const w of workers) {
       const wd = String(w.department || '').split(',').map(x => x.trim()).filter(Boolean);
-      const groups = {}; // отдел -> часове
+      const groups = {}; 
       for (const s of byWorker[w.id] || []) {
         if (s.day < start_date || s.day > end_date) continue;
         const d = s.dept || (wd.length === 1 ? wd[0] : '');
@@ -362,20 +358,32 @@ app.post('/api/payroll/calculate', async (req, res) => {
         g.h += s.h;
         if (s.day <= advance_until) g.adv += s.h;
       }
+      
       const parts = Object.entries(groups).map(([d, g]) => {
-        const rate = rates[w.id + '|' + d] ?? Number(w.monthly_salary) / MONTH_HOURS; // без въведена ставка: заплата / 168
-        const amount = r2(g.h * rate), advance = r2(g.adv * rate);
-        return { department: d, hours: r2(g.h), advance_hours: r2(g.adv), rate: r2(rate), amount, advance, salary: r2(amount - advance) };
+        const rate = rates[w.id + '|' + d] ?? Number(w.monthly_salary) / MONTH_HOURS;
+        const amount = r2(g.h * rate), advanceCalc = r2(g.adv * rate);
+        return { department: d, hours: r2(g.h), advance_hours: r2(g.adv), rate: r2(rate), amount, advance: advanceCalc, salary: r2(amount - advanceCalc) };
       });
+      
       const sum = k => r2(parts.reduce((a, p) => a + p[k], 0));
       const hours = sum('hours'), amount = sum('amount');
-      
-      // Обединяваме изчисления аванс с ръчно въведения
       const manualAdvance = r2(advMap[w.id] || 0);
       const advance = r2(sum('advance') + manualAdvance);
       const salary = r2(amount - advance);
 
-      rows.push({ worker_id: w.id, name: w.name, department: w.department, parts, hours, advance_hours: sum('advance_hours'), amount, advance, salary });
+      rows.push({ 
+        worker_id: w.id, 
+        name: w.name, 
+        department: w.department, 
+        parts, 
+        hours, 
+        advance_hours: sum('advance_hours'), 
+        amount, 
+        manual_advance: manualAdvance, // Изпращаме ръчния аванс отделно!
+        advance, 
+        salary 
+      });
+      
       await client.query('DELETE FROM payroll_payouts WHERE worker_id=$1 AND period_start=$2 AND period_end=$3', [w.id, start_date, end_date]);
       if (hours > 0) {
         await client.query(
