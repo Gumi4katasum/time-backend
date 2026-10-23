@@ -55,7 +55,7 @@ const addDays = (s, n) => { const d = new Date(s + 'T12:00'); d.setDate(d.getDat
 const monday = d => { d = new Date(d); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return iso(d); };
 
 const depsOf = o => String(o.department || '').split(',').map(x => x.trim()).filter(Boolean);
-const S = { dept: '', brush: 'Д', tab: 'sched', week: monday(new Date()), month: iso(new Date()).slice(0, 7), advDay: 15, source: 'scans', pay: null, advDaySel: iso(new Date()) };
+const S = { dept: '', brush: 'Д', tab: 'sched', week: monday(new Date()), month: iso(new Date()).slice(0, 7), source: 'scans', pay: null, advDaySel: iso(new Date()) };
 const TABS = { sched: 'График', shifts: 'Смени', pay: 'Заплати', adv: 'Аванси', live: 'На живо', emps: 'Служители' };
 const COMPANY = 'ФЕРБИНДУНГ ГРУП ЕООД';   
 const LOGO = '';                 
@@ -144,7 +144,7 @@ async function vSched() {
       } }, 'Копирай предишната седмица')),
     deptBar(all),
     bar,
-    h('p', { className: 'mu' }, 'Избери отдел, после смяна, и докосвай клетки. Смяната се записва към избрания отдел.'),
+    h('p', { className: 'mu' }, 'Избери отдел, после смяна, и докосвай клетки.'),
     h('div', { className: 'scroll' }, table));
 }
 
@@ -152,39 +152,64 @@ async function vSched() {
 async function vPay() {
   const all = await api('/api/workers');
   const [y, m] = S.month.split('-').map(Number), last = new Date(y, m, 0).getDate();
-  const body = () => ({ start_date: S.month + '-01', end_date: S.month + '-' + String(last).padStart(2, '0'), advance_until: S.month + '-' + String(S.advDay).padStart(2, '0'), source: S.source });
+  const body = () => ({ start_date: S.month + '-01', end_date: S.month + '-' + String(last).padStart(2, '0'), advance_until: S.advDaySel, source: S.source });
   const out = h('div', { className: 'scroll' });
   
   const show = () => {
     if (!S.pay) return;
     const rowsF = S.pay.map(r => ({ ...r, parts: (r.parts || []).filter(p => !S.dept || p.department === S.dept) })).filter(r => r.parts.length);
     
-    // Добавяме колона "Ръчен аванс" за прегледност
-    const t = h('table', {}, h('tr', {}, ['Служител', 'Отдел', 'Часове', 'Ставка €', 'Общо €', 'Аванс (ръчен + часове) €', 'Заплата €'].map(x => h('th', {}, x))));
-    const T = [0, 0, 0], f2 = n => n.toFixed(2);
+    // 8 колони за перфектна яснота
+    const t = h('table', {}, h('tr', {}, ['Служител', 'Отдел', 'Часове', 'Ставка €', 'Общо €', 'Аванс по часове €', 'Ръчен аванс €', 'Заплата €'].map(x => h('th', {}, x))));
+    const T = [0, 0, 0, 0], f2 = n => n.toFixed(2);
     
     rowsF.forEach(r => {
-      r.parts.forEach((p, i) => t.append(h('tr', {}, h('td', {}, i === 0 ? r.name : ''), h('td', {}, p.department || '—'), h('td', {}, p.hours), h('td', {}, f2(p.rate)), h('td', {}, f2(p.amount)), h('td', {}, f2(p.advance)), h('td', {}, f2(p.salary)))));
-      const sm = k => r.parts.reduce((a, p) => a + p[k], 0);
-      T[0] += sm('amount'); T[1] += sm('advance'); T[2] += sm('salary');
+      // Взимаме ръчния аванс директно от сървъра
+      const manualAdv = r.manual_advance || 0;
       
-      // Ако служителят е в няколко отдела, показваме обобщение
-      if (r.parts.length > 1) t.append(h('tr', {}, h('td', {}, h('b', {}, 'Общо ' + r.name)), h('td'), h('td', {}, h('b', {}, +sm('hours').toFixed(2))), h('td'), h('td', {}, h('b', {}, f2(sm('amount')))), h('td', {}, h('b', {}, f2(sm('advance')))), h('td', {}, h('b', {}, f2(sm('salary'))))));
+      r.parts.forEach((p, i) => t.append(h('tr', {}, 
+        h('td', {}, i === 0 ? r.name : ''), 
+        h('td', {}, p.department || '—'), 
+        h('td', {}, p.hours), 
+        h('td', {}, f2(p.rate)), 
+        h('td', {}, f2(p.amount)), 
+        h('td', {}, f2(p.advance)), // Това е само по часове
+        h('td', {}, i === 0 ? h('b', {}, f2(manualAdv)) : ''), 
+        h('td', {}, f2(p.salary))
+      )));
+      
+      const sm = k => r.parts.reduce((a, p) => a + p[k], 0);
+      T[0] += sm('amount'); T[1] += sm('advance'); T[2] += manualAdv; T[3] += sm('salary');
+      
+      if (r.parts.length > 1) t.append(h('tr', {}, 
+        h('td', {}, h('b', {}, 'Общо ' + r.name)), 
+        h('td'), 
+        h('td', {}, h('b', {}, +sm('hours').toFixed(2))), 
+        h('td'), 
+        h('td', {}, h('b', {}, f2(sm('amount')))), 
+        h('td', {}, h('b', {}, f2(sm('advance')))), 
+        h('td', {}, h('b', {}, f2(manualAdv))),
+        h('td', {}, h('b', {}, f2(sm('salary'))))
+      ));
     });
-    t.append(h('tr', {}, h('td', {}, h('b', {}, 'Всичко')), h('td'), h('td'), h('td'), h('td', {}, f2(T[0])), h('td', {}, f2(T[1])), h('td', {}, h('b', {}, f2(T[2])))));
+    t.append(h('tr', {}, 
+      h('td', {}, h('b', {}, 'Всичко')), h('td'), h('td'), h('td'), 
+      h('td', {}, f2(T[0])), h('td', {}, f2(T[1])), h('td', {}, f2(T[2])), h('td', {}, h('b', {}, f2(T[3])))
+    ));
     out.innerHTML = ''; out.append(t);
   };
   show();
+  
   return h('div', { className: 'card' },
     deptBar(all),
     h('div', { className: 'row' },
+      h('label', {}, 'Аванс до ден ', h('input', { type: 'date', value: S.advDaySel, onchange: e => { S.advDaySel = e.target.value; S.pay = null; render(); } })),
       h('input', { type: 'month', value: S.month, onchange: e => { S.month = e.target.value; S.pay = null; render(); } }),
-      h('label', {}, 'Аванс до ден ', h('input', { type: 'number', min: 1, max: 28, value: S.advDay, style: 'width:70px', onchange: e => { S.advDay = Math.min(28, Math.max(1, +e.target.value || 15)); } })),
-      h('select', { onchange: e => { S.source = e.target.value; } },
+      h('select', { onchange: e => { S.source = e.target.value; S.pay = null; } },
         h('option', { value: 'scans', selected: S.source === 'scans' }, 'Часове от сканиранията'),
         h('option', { value: 'schedule', selected: S.source === 'schedule' }, 'Часове от графика')),
       h('button', { className: 'p', onclick: async () => { try { S.pay = (await api('/api/payroll/calculate', { method: 'POST', body: body() })).rows; show(); } catch (e) { alert(e.message); } } }, 'Изчисли')),
-    h('p', { className: 'mu' }, 'Аванс = часовете от 1-во число до избрания ден + ръчно въведените аванси от таб „Аванси“. Заплата = общо за месеца − аванс.'),
+    h('p', { className: 'mu' }, 'Аванс по часове = часовете от 1-во число до избраната дата. Ръчен аванс = въведените суми от таб „Аванси“. Заплата = общо за месеца − (аванс по часове + ръчен аванс).'),
     out);
 }
 
@@ -224,9 +249,9 @@ async function vAdv() {
   return h('div', { className: 'card' },
     deptBar(all),
     h('div', { className: 'row' },
-      h('input', { type: 'month', value: S.month, onchange: e => { S.month = e.target.value; render(); } }),
       h('label', {}, 'Аванс до ден ',
-        h('input', { type: 'date', value: S.advDaySel || iso(new Date()), onchange: e => { S.advDaySel = e.target.value; render(); } }))),
+        h('input', { type: 'date', value: S.advDaySel || iso(new Date()), onchange: e => { S.advDaySel = e.target.value; render(); } })),
+      h('input', { type: 'month', value: S.month, onchange: e => { S.month = e.target.value; render(); } })),
     h('b', {}, 'Нов аванс'),
     h('div', { className: 'row' }, fw, fday, famt, fnote,
       h('button', { className: 'p', onclick: async () => {
@@ -296,7 +321,7 @@ async function vEmps() {
     h('div', { className: 'card scroll' }, t));
 }
 
-// ---------- Смени (създаване и редакция) ----------
+// ---------- Смени ----------
 async function vShifts() {
   const [T, ws] = await Promise.all([api('/api/shift-types'), api('/api/workers')]);
   const deps = depList(ws);
