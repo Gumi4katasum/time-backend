@@ -282,17 +282,16 @@ app.put('/api/shifts/bulk', async (req, res) => {
   } finally { client.release(); }
 });
 
-// НОВА заявка за копиране на произволен брой дни
-app.post('/api/shifts/copy-range', async (req, res) => {
-  const { from_start, from_end, to_start } = req.body || {};
-  if (!isDate(from_start) || !isDate(from_end) || !isDate(to_start)) return bad(res, 'Невалидни дати');
+app.post('/api/shifts/copy-week', async (req, res) => {
+  const { from_monday, to_monday } = req.body || {};
+  if (!isDate(from_monday) || !isDate(to_monday)) return bad(res, 'Невалидни дати');
   try {
     await pool.query(
       `INSERT INTO shifts (worker_id, day, label, hours, department)
-       SELECT worker_id, day + ($3::date - $1::date), label, hours, department
-       FROM shifts WHERE day BETWEEN $1::date AND $2::date
+       SELECT worker_id, day + ($2::date - $1::date), label, hours, department
+       FROM shifts WHERE day BETWEEN $1::date AND $1::date + 6
        ON CONFLICT (worker_id, day) DO UPDATE SET label=EXCLUDED.label, hours=EXCLUDED.hours, department=EXCLUDED.department`,
-      [from_start, from_end, to_start]
+      [from_monday, to_monday]
     );
     res.json({ success: true });
   } catch (e) { fail(res, e); }
@@ -380,7 +379,7 @@ app.post('/api/payroll/calculate', async (req, res) => {
         hours, 
         advance_hours: sum('advance_hours'), 
         amount, 
-        manual_advance: manualAdvance,
+        manual_advance: manualAdvance, // Изпращаме ръчния аванс отделно!
         advance, 
         salary 
       });
