@@ -50,27 +50,12 @@ const api = async (url, o = {}) => {
   if (!r.ok) throw new Error(d.error || 'Грешка');
   return d;
 };
-
-// ВАЖНО: Функции за работа с дати (поправени за часова зона)
-const iso = d => {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-};
-const addDays = (s, n) => { 
-  const d = new Date(s + 'T12:00:00'); // 12:00 пази от DST размествания
-  d.setDate(d.getDate() + n); 
-  return iso(d); 
-};
-const monday = d => { 
-  const dt = new Date(d + 'T12:00:00'); 
-  dt.setDate(dt.getDate() - (dt.getDay() + 6) % 7); 
-  return iso(dt); 
-};
+const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+const addDays = (s, n) => { const d = new Date(s + 'T12:00'); d.setDate(d.getDate() + n); return iso(d); };
+const monday = d => { d = new Date(d); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return iso(d); };
 
 const depsOf = o => String(o.department || '').split(',').map(x => x.trim()).filter(Boolean);
-const S = { dept: '', brush: 'Д', tab: 'sched', selectedDate: iso(new Date()), viewMode: 7, month: iso(new Date()).slice(0, 7), source: 'scans', pay: null, advDaySel: iso(new Date()) };
+const S = { dept: '', brush: 'Д', tab: 'sched', week: monday(new Date()), month: iso(new Date()).slice(0, 7), source: 'scans', pay: null, advDaySel: iso(new Date()) };
 const TABS = { sched: 'График', shifts: 'Смени', pay: 'Заплати', adv: 'Аванси', live: 'На живо', emps: 'Служители' };
 const COMPANY = 'ФЕРБИНДУНГ ГРУП ЕООД';   
 const LOGO = '';                 
@@ -88,29 +73,18 @@ async function render() {
 
 // ---------- График ----------
 async function vSched() {
-  let startDay = S.selectedDate;
-  if (S.viewMode === 7) {
-    startDay = monday(S.selectedDate);
-  }
-  
-  const days = [...Array(S.viewMode)].map((_, i) => addDays(startDay, i));
-  const endDay = days[days.length - 1];
-  const nm = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'];
-
-  const [all, sh] = await Promise.all([api('/api/workers'), api(`/api/shifts?from=${startDay}&to=${endDay}`)]);
+  const days = [...Array(7)].map((_, i) => addDays(S.week, i)), nm = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'];
+  const [all, sh] = await Promise.all([api('/api/workers'), api(`/api/shifts?from=${days[0]}&to=${days[6]}`)]);
   const ws = all.filter(w => !S.dept || depsOf(w).includes(S.dept));
   const P = sh.presets, map = {}, dmap = {};
   const vis = k => !S.dept || !P[k].department || P[k].department === S.dept;
   const colorOf = k => P[k]?.color || '#4f46e5';
   const order = ['', ...Object.keys(P).filter(vis)];
-  
   if (S.brush !== 'cycle' && S.brush !== 'clear' && !(P[S.brush] && vis(S.brush))) S.brush = 'cycle';
-  
   sh.rows.forEach(r => { map[r.worker_id + '|' + r.day] = r.label; dmap[r.worker_id + '|' + r.day] = r.department || ''; });
   const effDep = (w, k) => dmap[k] || (depsOf(w).length === 1 ? depsOf(w)[0] : '');
   const depFor = w => S.dept || (depsOf(w).length > 1 ? undefined : (depsOf(w)[0] || ''));
   const cells = [], hrs = {}, cnt = [];
-  
   const sums = w => { const o = {}; days.forEach(d => { const k = w.id + '|' + d, v = map[k]; if (v) { const dp = effDep(w, k); o[dp] = (o[dp] || 0) + (P[v]?.h || 0); } }); return o; };
   const upd = () => {
     cells.forEach(([b, k, w]) => {
@@ -124,7 +98,6 @@ async function vSched() {
     });
     days.forEach((d, i) => cnt[i].textContent = ws.filter(w => { const k = w.id + '|' + d; return map[k] && (!S.dept || !effDep(w, k) || effDep(w, k) === S.dept); }).length);
   };
-  
   const target = () => S.brush === 'cycle' ? null : S.brush === 'clear' ? '' : S.brush;
   const apply = async (pairs, v) => {
     const deps = pairs.map(([w]) => v ? depFor(w) : '');
@@ -135,7 +108,6 @@ async function vSched() {
     catch (e) { pairs.forEach(([w, d], i) => { map[w.id + '|' + d] = old[i][0]; dmap[w.id + '|' + d] = old[i][1]; }); upd(); alert(e.message); }
   };
   const fill = pairs => { const v = target(); if (v === null) { alert('Избери смяна от лентата най-горе.'); return; } apply(pairs, v); };
-  
   const bar = h('div', { className: 'row' });
   ['cycle', ...Object.keys(P).filter(vis), 'clear'].forEach(k => {
     const btn = h('button', { className: 'bb' + (S.brush === k ? ' sel' : ''), onclick: () => { S.brush = k; [...bar.children].forEach(c => c.classList.toggle('sel', c.dataset.k === k)); } },
@@ -143,15 +115,9 @@ async function vSched() {
     btn.dataset.k = k; if (P[k]) btn.style.borderLeftColor = colorOf(k); bar.append(btn);
   });
   bar.append(h('button', { onclick: () => { S.tab = 'shifts'; render(); } }, '＋ Нова смяна'));
-
   const table = h('table', {}, h('tr', {}, h('th', {}, 'Служител'),
-    days.map((d, i) => {
-      const dayName = S.viewMode === 1 ? ['Нд', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'][new Date(d + 'T12:00:00').getDay()] : nm[(new Date(d + 'T12:00:00').getDay() + 6) % 7];
-      return h('th', { className: 'dh', onclick: () => { if (ws.length && confirm('Попълни ' + dayName + ' ' + d.slice(8) + '.' + d.slice(5, 7) + ' за всички служители?')) fill(ws.map(w => [w, d])); } }, 
-        dayName, h('br'), h('span', {}, d.slice(8) + '.' + d.slice(5, 7)))
-    }), 
-    h('th', {}, S.dept ? 'Часове · ' + S.dept : 'Часове')));
-
+    days.map((d, i) => h('th', { className: 'dh', onclick: () => { if (ws.length && confirm('Попълни ' + nm[i] + ' ' + d.slice(8) + '.' + d.slice(5, 7) + ' за всички служители?')) fill(ws.map(w => [w, d])); } }, nm[i], h('br'), h('span', {}, d.slice(8) + '.' + d.slice(5, 7))),
+    ), h('th', {}, S.dept ? 'Часове · ' + S.dept : 'Часове')));
   ws.forEach(w => {
     hrs[w.id] = h('b');
     table.append(h('tr', {}, h('td', { className: 'nm', onclick: () => fill(days.map(d => [w, d])) }, w.name), days.map(d => {
@@ -166,38 +132,16 @@ async function vSched() {
   });
   table.append(h('tr', {}, h('td', {}, 'Хора на смяна'), days.map((_, i) => { cnt[i] = h('b'); return h('td', {}, cnt[i]); }), h('td')));
   upd();
-
-  const viewToggle = h('div', { className: 'row', style: 'gap:4px; margin:0;' },
-    h('button', { className: S.viewMode === 1 ? 'p' : '', onclick: () => { S.viewMode = 1; render(); } }, 'Ден'),
-    h('button', { className: S.viewMode === 3 ? 'p' : '', onclick: () => { S.viewMode = 3; render(); } }, '3 Дни'),
-    h('button', { className: S.viewMode === 7 ? 'p' : '', onclick: () => { S.viewMode = 7; render(); } }, 'Седмица')
-  );
-
-  const navRow = h('div', { className: 'row' },
-    viewToggle,
-    h('div', { style: 'width: 1px; height: 24px; background: var(--bd); margin: 0 10px;' }),
-    h('button', { onclick: () => { S.selectedDate = addDays(S.selectedDate, -S.viewMode); render(); } }, '◀'),
-    h('input', { 
-      type: 'date', 
-      value: S.selectedDate, 
-      style: 'width: auto;', 
-      onchange: e => { S.selectedDate = e.target.value; render(); } 
-    }),
-    h('button', { onclick: () => { S.selectedDate = addDays(S.selectedDate, S.viewMode); render(); } }, '▶'),
-    h('button', { onclick: () => { S.selectedDate = iso(new Date()); render(); } }, 'Днес'),
-    h('button', { onclick: async () => {
-      if (!confirm(`Копиране на предходните ${S.viewMode} дни в тези?`)) return;
-      try { 
-        const from = addDays(startDay, -S.viewMode);
-        const to = addDays(startDay, -1);
-        await api('/api/shifts/copy-range', { method: 'POST', body: { from_start: from, from_end: to, to_start: startDay } }); 
-        render(); 
-      } catch (e) { alert(e.message); }
-    } }, 'Копирай предишните дни'))
-  );
-
   return h('div', { className: 'card' },
-    navRow,
+    h('div', { className: 'row' },
+      h('button', { onclick: () => { S.week = addDays(S.week, -7); render(); } }, '◀'),
+      h('b', {}, `${days[0].slice(8)}.${days[0].slice(5, 7)} – ${days[6].slice(8)}.${days[6].slice(5, 7)}.${days[6].slice(0, 4)}`),
+      h('button', { onclick: () => { S.week = addDays(S.week, 7); render(); } }, '▶'),
+      h('button', { onclick: () => { S.week = monday(new Date()); render(); } }, 'Днес'),
+      h('button', { onclick: async () => {
+        if (!confirm('Копиране на предишната седмица в тази?')) return;
+        try { await api('/api/shifts/copy-week', { method: 'POST', body: { from_monday: addDays(S.week, -7), to_monday: S.week } }); render(); } catch (e) { alert(e.message); }
+      } }, 'Копирай предишната седмица')),
     deptBar(all),
     bar,
     h('p', { className: 'mu' }, 'Избери отдел, после смяна, и докосвай клетки.'),
@@ -215,10 +159,12 @@ async function vPay() {
     if (!S.pay) return;
     const rowsF = S.pay.map(r => ({ ...r, parts: (r.parts || []).filter(p => !S.dept || p.department === S.dept) })).filter(r => r.parts.length);
     
+    // 8 колони за перфектна яснота
     const t = h('table', {}, h('tr', {}, ['Служител', 'Отдел', 'Часове', 'Ставка €', 'Общо €', 'Аванс по часове €', 'Ръчен аванс €', 'Заплата €'].map(x => h('th', {}, x))));
     const T = [0, 0, 0, 0], f2 = n => n.toFixed(2);
     
     rowsF.forEach(r => {
+      // Взимаме ръчния аванс директно от сървъра
       const manualAdv = r.manual_advance || 0;
       
       r.parts.forEach((p, i) => t.append(h('tr', {}, 
@@ -227,7 +173,7 @@ async function vPay() {
         h('td', {}, p.hours), 
         h('td', {}, f2(p.rate)), 
         h('td', {}, f2(p.amount)), 
-        h('td', {}, f2(p.advance)), 
+        h('td', {}, f2(p.advance)), // Това е само по часове
         h('td', {}, i === 0 ? h('b', {}, f2(manualAdv)) : ''), 
         h('td', {}, f2(p.salary))
       )));
@@ -259,7 +205,7 @@ async function vPay() {
     h('div', { className: 'row' },
       h('label', {}, 'Аванс до ден ', h('input', { type: 'date', value: S.advDaySel, onchange: e => { S.advDaySel = e.target.value; S.pay = null; render(); } })),
       h('input', { type: 'month', value: S.month, onchange: e => { S.month = e.target.value; S.pay = null; render(); } }),
-      h('select', { onchange: e => { S.source = e.target.value; S.pay = null; show(); } },
+      h('select', { onchange: e => { S.source = e.target.value; S.pay = null; } },
         h('option', { value: 'scans', selected: S.source === 'scans' }, 'Часове от сканиранията'),
         h('option', { value: 'schedule', selected: S.source === 'schedule' }, 'Часове от графика')),
       h('button', { className: 'p', onclick: async () => { try { S.pay = (await api('/api/payroll/calculate', { method: 'POST', body: body() })).rows; show(); } catch (e) { alert(e.message); } } }, 'Изчисли')),
