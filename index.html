@@ -173,11 +173,11 @@ async function vPay() {
         h('td', {}, f2(p.amount)), 
         h('td', {}, f2(p.advance)), 
         h('td', {}, i === 0 ? h('b', {}, f2(manualAdv)) : ''), 
-        h('td', {}, f2(p.salary))
+        h('td', {}, f2(p.salary - (i === 0 ? manualAdv : 0)))
       )));
       
       const sm = k => r.parts.reduce((a, p) => a + p[k], 0);
-      T[0] += sm('amount'); T[1] += sm('advance'); T[2] += manualAdv; T[3] += sm('salary');
+      T[0] += sm('amount'); T[1] += sm('advance'); T[2] += manualAdv; T[3] += sm('salary') - manualAdv;
       
       if (r.parts.length > 1) t.append(h('tr', {}, 
         h('td', {}, h('b', {}, 'Общо ' + r.name)), 
@@ -187,7 +187,7 @@ async function vPay() {
         h('td', {}, h('b', {}, f2(sm('amount')))), 
         h('td', {}, h('b', {}, f2(sm('advance')))), 
         h('td', {}, h('b', {}, f2(manualAdv))),
-        h('td', {}, h('b', {}, f2(sm('salary'))))
+        h('td', {}, h('b', {}, f2(sm('salary') - manualAdv)))
       ));
     });
     t.append(h('tr', {}, 
