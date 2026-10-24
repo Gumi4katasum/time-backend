@@ -32,6 +32,13 @@ td.c button{width:56px;padding:0 2px;font-size:12px;overflow:hidden;text-overflo
 .adv-chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .adv-chip { background: var(--bg); border: 1px solid var(--bd); padding: 2px 6px; border-radius: 6px; font-size: 12px; display: flex; align-items: center; gap: 4px; }
 .adv-chip button { padding: 0 4px; border: none; background: transparent; color: var(--no); font-weight: bold; cursor: pointer; font-size: 14px;}
+.tr-wrap{position:relative;display:inline-block}
+.tr-pop{position:absolute;top:calc(100% + 6px);left:0;z-index:20;width:300px;max-width:calc(100vw - 32px);background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:10px;box-shadow:0 8px 24px rgba(20,24,40,.18)}
+.tr-head{display:flex;gap:6px;align-items:center;margin-bottom:6px}.tr-chip{flex:1;font-size:13px}.tr-chip.on{border-color:var(--ac);outline:2px solid var(--ac)}
+.tr-hint{font-size:13px;margin-bottom:6px}.tr-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:4px}.tr-grid.m{grid-template-columns:repeat(4,1fr)}
+.tr-grid button{padding:8px 0;font-variant-numeric:tabular-nums}.tr-foot{display:flex;justify-content:space-between;align-items:center;margin-top:8px;font-size:13px}
+dialog.dlg{width:min(420px,calc(100vw - 32px));margin:4vh auto auto;overflow:visible;color:var(--tx)}dialog.dlg::backdrop{background:rgba(0,0,0,.4)}
+.fl{display:flex;flex-direction:column;gap:4px;margin-bottom:10px;font-size:13px;color:var(--mu)}.fl>*{color:var(--tx)}.fl .tr-btn{text-align:left}
 </style>
 </head>
 <body>
@@ -320,23 +327,82 @@ async function vEmps() {
 }
 
 // ---------- Смени ----------
+const pad2 = n => String(n).padStart(2, '0');
+const durText = (a, b) => { const m = t => +t.slice(0, 2) * 60 + +t.slice(3); let d = m(b) - m(a); if (d <= 0) d += 1440; const hh = Math.floor(d / 60), mm = d % 60; return hh + ' ч' + (mm ? ' ' + mm + ' мин' : ''); };
+
+// Един бутон за начало и край: час → минути на началото, после час → минути на края
+function timeRange(st, en) {
+  const v = { st, en };
+  let step = 0; // 0 начален час, 1 начални минути, 2 краен час, 3 крайни минути
+  const btn = h('button', { type: 'button', className: 'tr-btn' });
+  const panel = h('div', { className: 'tr-pop', hidden: true });
+  const wrap = h('span', { className: 'tr-wrap' }, btn, panel);
+  const label = () => { btn.innerHTML = ''; btn.append('🕒 ', h('b', {}, v.st + ' – ' + v.en), h('span', { className: 'mu' }, ' · ' + durText(v.st, v.en))); };
+  const close = () => { panel.hidden = true; document.removeEventListener('pointerdown', outside, true); label(); };
+  const outside = e => { if (!wrap.contains(e.target)) close(); };
+  const set = (k, part, val) => { const [hh, mm] = v[k].split(':'); v[k] = part === 'h' ? pad2(val) + ':' + mm : hh + ':' + pad2(val); };
+  const draw = () => {
+    panel.innerHTML = '';
+    const k = step < 2 ? 'st' : 'en', isH = step % 2 === 0;
+    const chip = (kk, txt, s) => h('button', { type: 'button', className: 'tr-chip' + (k === kk ? ' on' : ''), onclick: () => { step = s; draw(); } }, txt, h('b', {}, v[kk]));
+    panel.append(h('div', { className: 'tr-head' }, chip('st', 'Начало ', 0), h('span', { className: 'mu' }, '→'), chip('en', 'Край ', 2)));
+    panel.append(h('div', { className: 'mu tr-hint' }, (k === 'st' ? 'Начало' : 'Край') + ': избери ' + (isH ? 'час' : 'минути')));
+    const cur = +v[k].split(':')[isH ? 0 : 1];
+    const vals = isH ? [...Array(24).keys()] : [...Array(12).keys()].map(i => i * 5);
+    panel.append(h('div', { className: 'tr-grid' + (isH ? '' : ' m') }, vals.map(n =>
+      h('button', { type: 'button', className: n === cur ? 'p' : '', onclick: () => { set(k, isH ? 'h' : 'm', n); if (step === 3) return close(); step++; draw(); } }, isH ? pad2(n) : ':' + pad2(n)))));
+    panel.append(h('div', { className: 'tr-foot' }, h('span', { className: 'mu' }, 'Продължителност: ' + durText(v.st, v.en)), h('button', { type: 'button', className: 'p', onclick: close }, 'Готово')));
+  };
+  btn.onclick = () => { if (!panel.hidden) return close(); step = 0; draw(); panel.hidden = false; document.addEventListener('pointerdown', outside, true); };
+  label();
+  return { el: wrap, get: () => ({ ...v }) };
+}
+
 async function vShifts() {
   const [T, ws] = await Promise.all([api('/api/shift-types'), api('/api/workers')]);
   const deps = depList(ws);
   const depSel = v => h('select', {}, h('option', { value: '' }, 'За всички отдели'), deps.map(d => h('option', { value: d, selected: d === v }, d)));
-  const mk = x => ({ code: x.code ? x.code.value : undefined, start_time: x.st.value, end_time: x.en.value, color: x.col.value, department: x.dep.value });
-  const f = { code: h('input', { placeholder: 'Име на смяната', maxLength: 20, style: 'width:160px' }), st: h('input', { type: 'time', value: '08:00' }), en: h('input', { type: 'time', value: '16:00' }), col: h('input', { type: 'color', value: '#f59e0b', style: 'width:54px;padding:2px' }), dep: depSel('') };
-  const t = h('table', {}, h('tr', {}, ['Смяна', 'Начало', 'Край', 'Часове', 'Цвят', 'Отдел', '', ''].map(x => h('th', {}, x))));
+  const fields = (v = {}) => ({
+    code: h('input', { placeholder: 'Име на смяната', maxLength: 20, value: v.code || '', style: 'width:180px' }),
+    tr: timeRange(v.start_time || '08:00', v.end_time || '16:00'),
+    col: h('input', { type: 'color', value: v.color || '#f59e0b', style: 'width:54px;padding:2px' }),
+    dep: depSel(v.department || '')
+  });
+  const body = x => { const r = x.tr.get(); return { code: x.code.value, start_time: r.st, end_time: r.en, color: x.col.value, department: x.dep.value }; };
+
+  const edit = (code, v) => {
+    const x = fields({ ...v, code });
+    const dlg = h('dialog', { className: 'card dlg' });
+    const done = () => { dlg.close(); dlg.remove(); };
+    dlg.append(
+      h('div', { className: 'row', style: 'justify-content:space-between' }, h('b', {}, 'Редакция на смяна'), h('button', { type: 'button', onclick: done }, '✕')),
+      h('label', { className: 'fl' }, 'Име', x.code),
+      h('div', { className: 'fl' }, 'Работно време', x.tr.el),
+      h('label', { className: 'fl' }, 'Цвят', x.col),
+      h('label', { className: 'fl' }, 'Отдел', x.dep),
+      h('p', { className: 'mu', style: 'font-size:13px' }, 'Новите часове важат за смените, които слагаш отсега нататък. Ако смениш името, графикът се обновява автоматично.'),
+      h('div', { className: 'row', style: 'justify-content:flex-end;margin:0' },
+        h('button', { type: 'button', onclick: done }, 'Отказ'),
+        h('button', { type: 'button', className: 'p', onclick: async () => { try { await api('/api/shift-types/' + encodeURIComponent(code), { method: 'PUT', body: body(x) }); done(); render(); } catch (e) { alert(e.message); } } }, 'Запази')));
+    dlg.addEventListener('cancel', done);
+    document.body.append(dlg); dlg.showModal();
+  };
+
+  const f = fields();
+  const t = h('table', {}, h('tr', {}, ['Смяна', 'Работно време', 'Часове', 'Отдел', '', ''].map(x => h('th', {}, x))));
   Object.entries(T).forEach(([code, v]) => {
-    const x = { st: h('input', { type: 'time', value: v.start_time }), en: h('input', { type: 'time', value: v.end_time }), col: h('input', { type: 'color', value: v.color, style: 'width:54px;padding:2px' }), dep: depSel(v.department || '') };
-    t.append(h('tr', {}, h('td', {}, h('span', { className: 'b', style: 'background:' + v.color }, code)), h('td', {}, x.st), h('td', {}, x.en), h('td', {}, v.h), h('td', {}, x.col), h('td', {}, x.dep),
-      h('td', {}, h('button', { onclick: async () => { try { await api('/api/shift-types/' + encodeURIComponent(code), { method: 'PUT', body: mk(x) }); render(); } catch (e) { alert(e.message); } } }, 'Запази')),
+    t.append(h('tr', {},
+      h('td', {}, h('span', { className: 'b', style: 'background:' + v.color }, code)),
+      h('td', {}, v.start_time + ' – ' + v.end_time),
+      h('td', {}, v.h),
+      h('td', {}, v.department || h('span', { className: 'mu' }, 'Всички')),
+      h('td', {}, h('button', { onclick: () => edit(code, v) }, '✎ Редактирай')),
       h('td', {}, h('button', { onclick: async () => { if (confirm('Изтриване на смяна ' + code + '?')) { try { await api('/api/shift-types/' + encodeURIComponent(code), { method: 'DELETE' }); render(); } catch (e) { alert(e.message); } } } }, '✕'))));
   });
   return h('div', {},
-    h('div', { className: 'card' }, h('b', {}, 'Нова смяна'), h('p', { className: 'mu' }, 'Името се вижда в графика (в клетката се показват първите знаци), например „Бар сутрин“. Часовете се смятат сами; ако краят е по-рано от началото, смяната минава през полунощ.'),
-      h('div', { className: 'row' }, f.code, f.st, '–', f.en, f.col, f.dep,
-        h('button', { className: 'p', onclick: async () => { try { await api('/api/shift-types', { method: 'POST', body: mk(f) }); render(); } catch (e) { alert(e.message); } } }, 'Добави'))),
+    h('div', { className: 'card' }, h('b', {}, 'Нова смяна'), h('p', { className: 'mu' }, 'Името се вижда в графика (в клетката се показват първите знаци), например „Бар сутрин“. Натисни часовника и избери начало и край. Ако краят е по-рано от началото, смяната минава през полунощ.'),
+      h('div', { className: 'row' }, f.code, f.tr.el, f.col, f.dep,
+        h('button', { className: 'p', onclick: async () => { try { await api('/api/shift-types', { method: 'POST', body: body(f) }); render(); } catch (e) { alert(e.message); } } }, 'Добави'))),
     h('div', { className: 'card scroll' }, t, h('p', { className: 'mu' }, 'Промяната на часовете важи за новите смени. Вече сложените в графика запазват часовете си.')));
 }
 

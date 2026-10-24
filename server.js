@@ -197,12 +197,32 @@ app.post('/api/shift-types', async (req, res) => {
 });
 
 app.put('/api/shift-types/:code', async (req, res) => {
-  const t = readType({ ...req.body, code: req.params.code });
-  if (!t) return bad(res, 'Невалидни данни');
+  const old = req.params.code;
+  const t = readType({ ...req.body, code: clean((req.body || {}).code) || old });
+  if (!t) return bad(res, 'Попълни име на смяната (до 20 знака), начало, край и цвят');
+  const client = await pool.connect();
   try {
-    await pool.query('UPDATE shift_types SET start_time=$2, end_time=$3, hours=$4, color=$5, department=$6 WHERE code=$1', [t.code, t.st, t.en, t.h, t.color, t.dep]);
+    await client.query('BEGIN');
+    if (t.code === old) {
+      const u = await client.query('UPDATE shift_types SET start_time=$2, end_time=$3, hours=$4, color=$5, department=$6 WHERE code=$1', [t.code, t.st, t.en, t.h, t.color, t.dep]);
+      if (!u.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Смяната не е намерена' }); }
+    } else {
+      // Преименуване: нов ред със същата позиция, графикът минава към новото име, старият се трие
+      const ins = await client.query(
+        `INSERT INTO shift_types (code, start_time, end_time, hours, color, department, created_at)
+         SELECT $2, $3, $4, $5, $6, $7, COALESCE(created_at, now()) FROM shift_types WHERE code=$1`,
+        [old, t.code, t.st, t.en, t.h, t.color, t.dep]);
+      if (!ins.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Смяната не е намерена' }); }
+      await client.query('UPDATE shifts SET label=$2 WHERE label=$1', [old, t.code]);
+      await client.query('DELETE FROM shift_types WHERE code=$1', [old]);
+    }
+    await client.query('COMMIT');
     res.json({ success: true });
-  } catch (e) { fail(res, e); }
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (e.code === '23505') return bad(res, 'Вече има смяна с това кратко име');
+    fail(res, e);
+  } finally { client.release(); }
 });
 
 app.delete('/api/shift-types/:code', async (req, res) => {
