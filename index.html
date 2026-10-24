@@ -55,7 +55,6 @@ const addDays = (s, n) => { const d = new Date(s + 'T12:00'); d.setDate(d.getDat
 const monday = d => { d = new Date(d); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return iso(d); };
 
 const depsOf = o => String(o.department || '').split(',').map(x => x.trim()).filter(Boolean);
-// ТУК СА ДОБАВЕНИ selectedDate И viewMode
 const S = { dept: '', brush: 'Д', tab: 'sched', selectedDate: iso(new Date()), viewMode: 7, month: iso(new Date()).slice(0, 7), source: 'scans', pay: null, advDaySel: iso(new Date()) };
 const TABS = { sched: 'График', shifts: 'Смени', pay: 'Заплати', adv: 'Аванси', live: 'На живо', emps: 'Служители' };
 const COMPANY = 'ФЕРБИНДУНГ ГРУП ЕООД';   
