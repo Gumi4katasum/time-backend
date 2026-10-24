@@ -50,12 +50,26 @@ const api = async (url, o = {}) => {
   if (!r.ok) throw new Error(d.error || 'Грешка');
   return d;
 };
-const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-const addDays = (s, n) => { const d = new Date(s + 'T12:00'); d.setDate(d.getDate() + n); return iso(d); };
-const monday = d => { d = new Date(d); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return iso(d); };
+
+// ВАЖНО: Функции за работа с дати (поправени за часова зона)
+const iso = d => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+const addDays = (s, n) => { 
+  const d = new Date(s + 'T12:00:00'); // 12:00 пази от DST размествания
+  d.setDate(d.getDate() + n); 
+  return iso(d); 
+};
+const monday = d => { 
+  const dt = new Date(d + 'T12:00:00'); 
+  dt.setDate(dt.getDate() - (dt.getDay() + 6) % 7); 
+  return iso(dt); 
+};
 
 const depsOf = o => String(o.department || '').split(',').map(x => x.trim()).filter(Boolean);
-// Добавени selectedDate и viewMode за графика
 const S = { dept: '', brush: 'Д', tab: 'sched', selectedDate: iso(new Date()), viewMode: 7, month: iso(new Date()).slice(0, 7), source: 'scans', pay: null, advDaySel: iso(new Date()) };
 const TABS = { sched: 'График', shifts: 'Смени', pay: 'Заплати', adv: 'Аванси', live: 'На живо', emps: 'Служители' };
 const COMPANY = 'ФЕРБИНДУНГ ГРУП ЕООД';   
@@ -74,13 +88,11 @@ async function render() {
 
 // ---------- График ----------
 async function vSched() {
-  // Изчисляваме началния ден според режима (Ден, 3 дни, Седмица)
   let startDay = S.selectedDate;
   if (S.viewMode === 7) {
-    startDay = monday(S.selectedDate); // Ако е седмица, хващаме понеделника
+    startDay = monday(S.selectedDate);
   }
   
-  // Генерираме масив с датите
   const days = [...Array(S.viewMode)].map((_, i) => addDays(startDay, i));
   const endDay = days[days.length - 1];
   const nm = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'];
@@ -134,7 +146,7 @@ async function vSched() {
 
   const table = h('table', {}, h('tr', {}, h('th', {}, 'Служител'),
     days.map((d, i) => {
-      const dayName = S.viewMode === 1 ? ['Нд', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'][new Date(d).getDay()] : nm[(new Date(d).getDay() + 6) % 7];
+      const dayName = S.viewMode === 1 ? ['Нд', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'][new Date(d + 'T12:00:00').getDay()] : nm[(new Date(d + 'T12:00:00').getDay() + 6) % 7];
       return h('th', { className: 'dh', onclick: () => { if (ws.length && confirm('Попълни ' + dayName + ' ' + d.slice(8) + '.' + d.slice(5, 7) + ' за всички служители?')) fill(ws.map(w => [w, d])); } }, 
         dayName, h('br'), h('span', {}, d.slice(8) + '.' + d.slice(5, 7)))
     }), 
@@ -155,17 +167,15 @@ async function vSched() {
   table.append(h('tr', {}, h('td', {}, 'Хора на смяна'), days.map((_, i) => { cnt[i] = h('b'); return h('td', {}, cnt[i]); }), h('td')));
   upd();
 
-  // Бутони за превключване на изгледа (Ден / 3 дни / Седмица)
   const viewToggle = h('div', { className: 'row', style: 'gap:4px; margin:0;' },
     h('button', { className: S.viewMode === 1 ? 'p' : '', onclick: () => { S.viewMode = 1; render(); } }, 'Ден'),
     h('button', { className: S.viewMode === 3 ? 'p' : '', onclick: () => { S.viewMode = 3; render(); } }, '3 Дни'),
     h('button', { className: S.viewMode === 7 ? 'p' : '', onclick: () => { S.viewMode = 7; render(); } }, 'Седмица')
   );
 
-  // Навигация (стрелки + календар)
   const navRow = h('div', { className: 'row' },
     viewToggle,
-    h('div', { style: 'width: 1px; height: 24px; background: var(--bd); margin: 0 10px;' }), // Разделител
+    h('div', { style: 'width: 1px; height: 24px; background: var(--bd); margin: 0 10px;' }),
     h('button', { onclick: () => { S.selectedDate = addDays(S.selectedDate, -S.viewMode); render(); } }, '◀'),
     h('input', { 
       type: 'date', 
@@ -179,8 +189,8 @@ async function vSched() {
       if (!confirm(`Копиране на предходните ${S.viewMode} дни в тези?`)) return;
       try { 
         const from = addDays(startDay, -S.viewMode);
-        const to = startDay;
-        await api('/api/shifts/copy-week', { method: 'POST', body: { from_monday: from, to_monday: to } }); 
+        const to = addDays(startDay, -1);
+        await api('/api/shifts/copy-range', { method: 'POST', body: { from_start: from, from_end: to, to_start: startDay } }); 
         render(); 
       } catch (e) { alert(e.message); }
     } }, 'Копирай предишните дни'))
