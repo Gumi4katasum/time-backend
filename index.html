@@ -55,7 +55,7 @@ const addDays = (s, n) => { const d = new Date(s + 'T12:00'); d.setDate(d.getDat
 const monday = d => { d = new Date(d); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return iso(d); };
 
 const depsOf = o => String(o.department || '').split(',').map(x => x.trim()).filter(Boolean);
-const S = { dept: '', brush: 'Д', tab: 'sched', week: monday(new Date()), month: iso(new Date()).slice(0, 7), source: 'scans', pay: null, advDaySel: iso(new Date()) };
+const S = { dept: '', brush: 'Д', tab: 'sched', week: monday(new Date()), month: iso(new Date()).slice(0, 7), source: 'schedule', pay: null, advDaySel: iso(new Date()) };
 const TABS = { sched: 'График', shifts: 'Смени', pay: 'Заплати', adv: 'Аванси', live: 'На живо', emps: 'Служители' };
 const COMPANY = 'ФЕРБИНДУНГ ГРУП ЕООД';   
 const LOGO = '';                 
@@ -173,11 +173,11 @@ async function vPay() {
         h('td', {}, f2(p.amount)), 
         h('td', {}, f2(p.advance)), 
         h('td', {}, i === 0 ? h('b', {}, f2(manualAdv)) : ''), 
-        h('td', {}, f2(p.salary - (i === 0 ? manualAdv : 0)))
+        h('td', {}, f2(p.advance - (i === 0 ? manualAdv : 0)))
       )));
       
       const sm = k => r.parts.reduce((a, p) => a + p[k], 0);
-      T[0] += sm('amount'); T[1] += sm('advance'); T[2] += manualAdv; T[3] += sm('salary') - manualAdv;
+      T[0] += sm('amount'); T[1] += sm('advance'); T[2] += manualAdv; T[3] += sm('advance') - manualAdv;
       
       if (r.parts.length > 1) t.append(h('tr', {}, 
         h('td', {}, h('b', {}, 'Общо ' + r.name)), 
@@ -187,7 +187,7 @@ async function vPay() {
         h('td', {}, h('b', {}, f2(sm('amount')))), 
         h('td', {}, h('b', {}, f2(sm('advance')))), 
         h('td', {}, h('b', {}, f2(manualAdv))),
-        h('td', {}, h('b', {}, f2(sm('salary') - manualAdv)))
+        h('td', {}, h('b', {}, f2(sm('advance') - manualAdv)))
       ));
     });
     t.append(h('tr', {}, 
@@ -207,7 +207,7 @@ async function vPay() {
         h('option', { value: 'scans', selected: S.source === 'scans' }, 'Часове от сканиранията'),
         h('option', { value: 'schedule', selected: S.source === 'schedule' }, 'Часове от графика')),
       h('button', { className: 'p', onclick: async () => { try { S.pay = (await api('/api/payroll/calculate', { method: 'POST', body: body() })).rows; show(); } catch (e) { alert(e.message); } } }, 'Изчисли')),
-    h('p', { className: 'mu' }, 'Аванс по часове = часовете от 1-во число до избраната дата. Ръчен аванс = въведените суми от таб „Аванси“. Заплата = общо за месеца − (аванс по часове + ръчен аванс).'),
+    h('p', { className: 'mu' }, 'Аванс по часове = часовете от 1-во число до избраната дата. Ръчен аванс = въведените суми от таб „Аванси“. Заплата = аванс по часове − ръчен аванс.'),
     out);
 }
 
